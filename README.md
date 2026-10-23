@@ -19,8 +19,13 @@ Kubernetes (`k8s/service-keys/`) sin que el valor real pase nunca por el
 repo. Los tres clientes productores (go-common, py-common, y el cliente JS
 de identification-service) leen esa key de la variable de entorno
 `AUDIT_API_KEY` y la mandan en el header `X-Service-API-Key` -- ver
-`docs/audit-clients-update.md`. Cómo audit-service valida esa key es una
-tarea aparte, todavía pendiente.
+`docs/audit-clients-update.md`. Del lado receptor, audit-service la valida
+con `ServiceKeyAuthMiddleware` (una variable `AUDIT_KEY_<SERVICIO>` por
+productor conocido) y cruza el `service_name` del body contra el servicio
+autenticado antes de persistir -- ver `docs/audit-sservice-update.md` y
+`docs/service-key-map.md`. El pipeline completo productor → audit-service
+está verificado de punta a punta (incluido con curl manual contra un stack
+de dev real).
 
 Para generar (o rotar) las keys la primera vez:
 

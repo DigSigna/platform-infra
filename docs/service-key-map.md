@@ -29,13 +29,28 @@ Al rotar una key (correr el script de nuevo para un servicio), actualizar a
 mano la fila correspondiente con la fecha y el fingerprint que el script
 imprime en ese momento -- el script no edita este archivo.
 
-En producción, cada servicio monta el valor de su Secret (`api_key`) como la
-variable de entorno `AUDIT_API_KEY`, y go-common/py-common/el cliente JS de
-identification-service la mandan en el header `X-Service-API-Key` de cada
-request a `POST /api/v1/events` (ver docs/audit-clients-update.md). No se
-encontró todavía manifiesto de despliegue de producción para ninguno de los
-5 servicios en este repo ni en los suyos propios -- montar ese Secret ahí
-queda pendiente hasta que ese manifiesto exista.
+En producción, cada servicio productor monta el valor de su propio Secret
+(`api_key`) como la variable de entorno `AUDIT_API_KEY`, y go-common/
+py-common/el cliente JS de identification-service la mandan en el header
+`X-Service-API-Key` de cada request a `POST /api/v1/events` (ver
+docs/audit-clients-update.md). No se encontró todavía manifiesto de
+despliegue de producción para ninguno de los 5 servicios en este repo ni en
+los suyos propios -- montar ese Secret ahí queda pendiente hasta que ese
+manifiesto exista.
+
+audit-service, del lado receptor, valida esa misma key con
+`ServiceKeyAuthMiddleware` (ver docs/audit-sservice-update.md) -- pero la lee
+de *su propio* set de variables de entorno, una por productor conocido, no de
+`AUDIT_API_KEY`: `AUDIT_KEY_HSM_SERVICE`, `AUDIT_KEY_CERTIFICATE_SERVICE`,
+`AUDIT_KEY_SIGNING_SERVICE`, `AUDIT_KEY_IDENTIFICATION_SERVICE`,
+`AUDIT_KEY_VERIFICATION_SERVICE`. Es el mismo valor que el Secret de la
+tabla de arriba montado dos veces con dos nombres de variable distintos (uno
+en el pod del productor, otro en el pod de audit-service) -- nunca un
+Secret/key nuevo. Sin esto configurado del lado de audit-service (al menos
+uno), el proceso falla al arrancar en producción. Agregar un productor nuevo
+del lado de audit-service es sólo una variable de entorno más
+(`AUDIT_KEY_<SERVICIO>`), sin tocar código (ver loadServiceKeys en
+audit-service/internal/infrastructure/config/app_config.go).
 
 ## Dev (no productivo)
 
