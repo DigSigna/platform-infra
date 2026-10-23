@@ -13,7 +13,7 @@
 # no una operación destructiva que primero haya que borrar a mano.
 #
 # Uso:
-#   ./generate-service-keys.sh                  # genera/rota las 4 keys
+#   ./generate-service-keys.sh                  # genera/rota las 5 keys
 #   ./generate-service-keys.sh hsm-service       # sólo esa (rotación puntual)
 #   NAMESPACE=otro-ns ./generate-service-keys.sh # namespace distinto al default
 #
@@ -25,15 +25,19 @@ set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-digsigna}"
 
-# Productores confirmados contra audit-service hoy (ver docs/plan.md). NO
-# incluye audit-service (es quien valida, no quien produce) ni api-gateway
-# (todavía no existe como servicio) -- agregar una línea acá cuando
-# api-gateway exista de verdad, no antes.
+# Productores confirmados contra audit-service hoy (docs/plan.md listaba 4;
+# verification-service usa el mismo wiring de py-common/audit hybrid que
+# certificate-service y signing-service -- AUDIT_ENABLED/AUDIT_STRATEGY en su
+# config.py y docker-compose.dev.yml -- así que es un productor real aunque
+# el plan original no lo mencionara). NO incluye audit-service (es quien
+# valida, no quien produce) ni api-gateway (todavía no existe como servicio)
+# -- agregar una línea acá cuando api-gateway exista de verdad, no antes.
 declare -A SERVICE_SECRETS=(
   [hsm-service]="hsm-service-audit-key"
   [certificate-service]="certificate-service-audit-key"
   [signing-service]="signing-service-audit-key"
   [identification-service]="identification-service-audit-key"
+  [verification-service]="verification-service-audit-key"
 )
 
 require_cmd() {

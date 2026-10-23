@@ -16,7 +16,14 @@ un endpoint administrativo), eso se trata aparte, no en esta tabla.
 | certificate-service | `certificate-service-audit-key` | `digsigna` | `audit-service:events:write` | _pendiente -- correr `scripts/generate-service-keys.sh`_ | _pendiente_ |
 | signing-service | `signing-service-audit-key` | `digsigna` | `audit-service:events:write` | _pendiente -- correr `scripts/generate-service-keys.sh`_ | _pendiente_ |
 | identification-service | `identification-service-audit-key` | `digsigna` | `audit-service:events:write` | _pendiente -- correr `scripts/generate-service-keys.sh`_ | _pendiente_ |
+| verification-service | `verification-service-audit-key` | `digsigna` | `audit-service:events:write` | _pendiente -- correr `scripts/generate-service-keys.sh`_ | _pendiente_ |
 | api-gateway | _(no existe todavía)_ | -- | -- | -- | -- |
+
+`verification-service` no estaba en la lista original del plan, pero ya usa
+el mismo wiring de py-common/audit hybrid que certificate-service y
+signing-service (`AUDIT_ENABLED`/`AUDIT_STRATEGY` en `config.py` y
+`docker-compose.dev.yml`) -- es un productor real hoy, así que se incluyó
+acá con el mismo tratamiento que los otros 4.
 
 Al rotar una key (correr el script de nuevo para un servicio), actualizar a
 mano la fila correspondiente con la fecha y el fingerprint que el script
@@ -24,7 +31,7 @@ imprime en ese momento -- el script no edita este archivo.
 
 ## Dev (no productivo)
 
-En dev, los 4 productores comparten una única key fake estática vía
+En dev, los 5 productores comparten una única key fake estática vía
 `AUDIT_SERVICE_API_KEY` en el `docker-compose.dev.yml` de cada repo. Ver
 README.md de este repo, sección "Dev: key compartida" -- ese valor nunca debe
 salir de un entorno de un solo host y nunca debe tratarse como las keys de

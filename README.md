@@ -8,8 +8,9 @@ alcance completo planeado del repo.
 ## API keys de servicio para audit-service
 
 Hoy ningún servicio productor de eventos de auditoría (hsm-service,
-certificate-service, signing-service, identification-service; a futuro
-api-gateway) puede autenticarse contra `POST /api/v1/events` de audit-service
+certificate-service, signing-service, identification-service,
+verification-service; a futuro api-gateway) puede autenticarse contra
+`POST /api/v1/events` de audit-service
 -- el transporte HTTP de `go-common`/`py-common` postea eventos sin ninguna
 credencial. Este mecanismo resuelve esa parte: genera una API key estática
 por servicio productor, documenta quién tiene cuál en
@@ -35,7 +36,7 @@ el valor real de la key.
 ## Dev: key compartida
 
 En `docker-compose.dev.yml` de cada servicio productor, `AUDIT_SERVICE_API_KEY`
-es una única key fake estática, igual en los 4 repos -- mismo criterio que
+es una única key fake estática, igual en los 5 repos -- mismo criterio que
 `KEYCLOAK_ADMIN_PASSWORD=admin` en identification-service: válido porque es
 un entorno efímero de un solo host, sin salida de red real. **Nunca usar esa
 key fuera de dev.** El valor fake es:
