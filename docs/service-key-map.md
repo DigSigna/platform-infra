@@ -29,10 +29,17 @@ Al rotar una key (correr el script de nuevo para un servicio), actualizar a
 mano la fila correspondiente con la fecha y el fingerprint que el script
 imprime en ese momento -- el script no edita este archivo.
 
+En producción, cada servicio monta el valor de su Secret (`api_key`) como la
+variable de entorno `AUDIT_API_KEY`, y go-common/py-common/el cliente JS de
+identification-service la mandan en el header `X-Service-API-Key` de cada
+request a `POST /api/v1/events` (ver docs/audit-clients-update.md). No se
+encontró todavía manifiesto de despliegue de producción para ninguno de los
+5 servicios en este repo ni en los suyos propios -- montar ese Secret ahí
+queda pendiente hasta que ese manifiesto exista.
+
 ## Dev (no productivo)
 
 En dev, los 5 productores comparten una única key fake estática vía
-`AUDIT_SERVICE_API_KEY` en el `docker-compose.dev.yml` de cada repo. Ver
-README.md de este repo, sección "Dev: key compartida" -- ese valor nunca debe
-salir de un entorno de un solo host y nunca debe tratarse como las keys de
-esta tabla.
+`AUDIT_API_KEY` en el `docker-compose.dev.yml` de cada repo. Ver README.md de
+este repo, sección "Dev: key compartida" -- ese valor nunca debe salir de un
+entorno de un solo host y nunca debe tratarse como las keys de esta tabla.
