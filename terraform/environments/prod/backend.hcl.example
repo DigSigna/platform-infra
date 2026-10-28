@@ -1,0 +1,14 @@
+# Copiar a backend.hcl (gitignored) y completar con los valores reales.
+# Uso: terraform init -backend-config=backend.hcl
+
+bucket = "<nombre-del-space>"
+region = "<region-del-space>" # ej. nyc3 — el backend S3 lo exige aunque DO lo ignore
+
+endpoints = {
+  s3 = "https://<region-del-space>.digitaloceanspaces.com"
+}
+
+# Credenciales: preferir las variables de entorno AWS_ACCESS_KEY_ID /
+# AWS_SECRET_ACCESS_KEY (keys de Spaces, generadas en el panel de DO) en vez
+# de ponerlas acá. Si de verdad hace falta ponerlas en este archivo, nunca
+# commitear backend.hcl (ya está en .gitignore).

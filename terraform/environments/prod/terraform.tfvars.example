@@ -1,0 +1,31 @@
+# Copiar a terraform.tfvars (gitignored) y completar con valores reales.
+
+region = "nyc3"
+tags   = ["platform-infra", "prod"]
+
+# --- network ---
+vpc_name     = "digsigna-prod-vpc"
+vpc_ip_range = "10.20.0.0/20"
+
+# --- doks ---
+doks_name            = "digsigna-prod-doks"
+doks_version         = "" # vacío = última versión 1.30.x disponible
+doks_version_prefix  = "1.30."
+doks_ha              = false
+node_pool_name       = "default"
+node_size            = "s-2vcpu-4gb"
+node_pool_min_nodes  = 1
+node_pool_max_nodes  = 3
+
+# --- database: valores REALES del cluster existente, ver
+# modules/database/README.md para cómo obtenerlos con doctl antes de
+# correr terraform import. Si no coinciden exactamente, el primer plan
+# después del import va a mostrar un diff (en el peor caso, un replace).
+db_name                  = "bitacoradigital-database-CAMBIAR"
+db_engine                = "mysql"
+db_version               = "8"
+db_size                  = "db-s-1vcpu-2gb"
+db_region                = "nyc3"
+db_node_count            = 1
+db_private_network_uuid  = null
+db_tags                  = []
