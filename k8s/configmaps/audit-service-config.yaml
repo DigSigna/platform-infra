@@ -1,0 +1,34 @@
+# NUEVO -- copia fiel de audit-service/config/config.production.yaml.
+# Cierra el mismo gap ya encontrado y corregido para hsm-service/
+# gateway-service: el Dockerfile de runtime de audit-service (Go,
+# multi-stage) solo copia el binario compilado, nunca config/ -- sin este
+# ConfigMap montado en AUDIT_CONFIG_PATH (ver
+# k8s/deployments/audit-service.yaml), LoadConfig() no encuentra ningún
+# archivo y el proceso no arranca.
+#
+# Los valores reales (database.connection_string, auth.*) nunca van acá --
+# vienen todos de env vars (DATABASE_URL, AUDIT_AUTH_JWKS_URL, las 6
+# AUDIT_KEY_<SERVICIO>) vía viper.AutomaticEnv()/BindEnv, igual que en el
+# propio archivo fuente. Mantener este ConfigMap en sync con
+# audit-service/config/config.production.yaml si ese archivo cambia de
+# forma (campos nuevos, no valores).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: audit-service-config
+  namespace: digsigna
+data:
+  config.yaml: |
+    environment: production
+
+    server:
+      address: ":8080"
+
+    database:
+      connection_string: "" # MUST be set via DATABASE_URL environment variable
+
+    auth:
+      mode: "production"
+      public_key_path: "" # sin consumidor en modo production, ver k8s/deployments/audit-service.yaml
+      jwks_url: "" # MUST be set via AUDIT_AUTH_JWKS_URL environment variable
+      jwks_cache_minutes: 60

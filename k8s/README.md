@@ -14,15 +14,15 @@ completo, servicio por servicio, de qué variable necesita cada uno, leído
 directamente del código real de los 7 repos (no asumido). Léanlo antes de
 tocar cualquier valor real.
 
-**Fuera de alcance de este directorio, a propósito**: no hay ningún
-`Deployment`/`Service`/`Ingress` todavía para los 6 servicios de aplicación
+**Ya no fuera de alcance**: los 6 servicios de aplicación
 (identification-service, certificate-service, signing-service,
-verification-service, gateway-service, audit-service) — esta ronda de
-trabajo cubrió el inventario de variables/secrets, su mecanismo de carga, y
-(ronda siguiente) hsm-service + su Redis de apoyo, que ya existían como
-manifiestos reales en `softhsm/k8s/` o eran un gap bloqueante confirmado.
-Los otros 6 siguen sin Deployment: no había ningún manifiesto previo de
-referencia para ellos, a diferencia de hsm-service.
+verification-service, gateway-service, audit-service) ya tienen
+`Deployment`+`Service` propios (ver `deployments/` abajo), y hay un
+`Ingress` apuntando al único de los 6 que corresponde exponer
+(gateway-service) -- ver `ingress/` abajo y
+`terraform/modules/firewall/README.md` para la regla de diseño que esto
+implementa (solo 80/443 públicos, siempre hacia gateway-service, nunca a
+los otros 5 backends directo).
 
 ```
 k8s/
@@ -34,13 +34,22 @@ k8s/
     softhsm-config.yaml         # migrado de softhsm/k8s/softhsm-configmap.yaml
     auth-public-key-configmap.yaml  # migrado de softhsm/k8s/ -- clave pública, SIN consumidor real hoy (auth es solo JWKS)
     gateway-service-config.yaml  # NUEVO -- copia fiel de gateway-service/config/config.production.yaml, resuelve el mismo gap de ruta de config que hsm-service tenía
+    audit-service-config.yaml    # NUEVO -- mismo gap, copia fiel de audit-service/config/config.production.yaml
   storage/
     softhsm-pvc.yaml             # migrado de softhsm/k8s/ -- tokens de SoftHSM
     identification-service-jwt-keys-pvc.yaml  # NUEVO -- reemplaza el Secret de JWT, ver nota abajo
   deployments/
     hsm-service.yaml             # migrado y corregido contra docker-compose.dev.yml/código real -- sin initContainer de auto-init, auth vía JWKS production
-    redis-gateway.yaml            # NUEVO -- Redis real para /ready de api-gateway (Service "redis")
+    redis-gateway.yaml            # NUEVO -- Redis real para /ready de api-gateway (Service "redis"), reusado también por signing/verification-service
     keycloak.yaml                  # NUEVO -- Deployment+Service, `start` (no start-dev) contra MySQL, sin keycloak-seed (ver el archivo)
+    identification-service.yaml    # NUEVO -- primero en el orden, sin dependencias de arranque
+    certificate-service.yaml       # NUEVO
+    audit-service.yaml             # NUEVO -- AUDIT_CONFIG_PATH + ConfigMap propio (gap nuevo encontrado, ver el archivo)
+    signing-service.yaml           # NUEVO -- AUTH_ISSUER/AUTH_AUDIENCE + REDIS_* (gaps nuevos, ver el archivo)
+    verification-service.yaml      # NUEVO -- mismos dos gaps que signing-service
+    gateway-service.yaml           # NUEVO -- último en el orden, único backend de ingress/gateway-ingress.yaml
+  ingress/
+    gateway-ingress.yaml           # NUEVO -- único Ingress de este repo, solo gateway-service de backend (ver el archivo para las 3 decisiones que resuelve)
   shared-secrets/             # Secrets compartidos entre varios servicios
     mysql-secrets.secret.yaml   # DSN de la MySQL gestionada (migrado de softhsm/k8s/)
     hsm-secrets.secret.yaml     # PIN/SO-PIN/master keys de SoftHSM (migrado de softhsm/k8s/)
@@ -51,10 +60,10 @@ k8s/
     identification-service.secret.yaml  # incluye JWT_SIGNING_KEYS_DIR -- ver storage/identification-service-jwt-keys-pvc.yaml
     hsm-service.secret.yaml
     certificate-service.secret.yaml   # incluye AUTH_ISSUER/AUTH_AUDIENCE
-    signing-service.secret.yaml       # incluye REDIS_* -- ver gap abajo
-    verification-service.secret.yaml
+    signing-service.secret.yaml       # incluye REDIS_* -- resuelto, reusa deployments/redis-gateway.yaml
+    verification-service.secret.yaml  # incluye REDIS_* (gap nuevo encontrado) y AUTH_ISSUER/AUTH_AUDIENCE va directo en el Deployment
     gateway-service.secret.yaml   # GATEWAY_REDIS_ADDRESS=redis:6379, GATEWAY_CONFIG_PATH -- ver configmaps/gateway-service-config.yaml
-    audit-service.secret.yaml
+    audit-service.secret.yaml     # ya NO incluye AUDIT_AUTH_PUBLIC_KEY_PATH (dead en modo production, ver el archivo)
   service-keys/                # YA EXISTÍA: mecanismo de auth productor->audit-service
     <servicio>.secret.yaml       # una api_key por productor (incluye ahora gateway-service)
     audit-service.secret.yaml    # el lado receptor: las 6 AUDIT_KEY_<SERVICIO> juntas
@@ -192,17 +201,42 @@ kubectl create secret generic audit-service-producer-keys \
 8. `kubectl apply -f k8s/rbac/hsm-service-rbac.yaml -f k8s/configmaps/ -f k8s/storage/softhsm-pvc.yaml`
 9. `kubectl apply -f k8s/deployments/redis-gateway.yaml -f k8s/deployments/hsm-service.yaml -f k8s/deployments/keycloak.yaml`
 
-Los pasos 8-9 son los únicos con `Deployment` real hoy, y cubren
-hsm-service (porque ya existía como manifiesto real migrado), el Redis de
-apoyo de api-gateway (porque era un gap bloqueante para `/ready`) y ahora
-Keycloak (gap bloqueante para que identification-service pueda loguear a
-nadie). Ninguno de los tres depende de los otros dos al arrancar
+Los pasos 8-9 cubren hsm-service (porque ya existía como manifiesto real
+migrado), el Redis de apoyo de api-gateway (porque era un gap bloqueante
+para `/ready`, y ahora también reusado por signing/verification-service)
+y Keycloak (gap bloqueante para que identification-service pueda loguear
+a nadie). Ninguno de los tres depende de los otros dos al arrancar
 (hsm-service depende de identification-service, no de Keycloak
 directamente -- ver el comentario de ordering en
 `k8s/deployments/keycloak.yaml`), así que el orden entre ellos en este
-paso no importa. Los otros 6 servicios siguen sin `Deployment`/`Service`/
-`Ingress` — sus Secrets (pasos 1-7) ya están listos para cuando esos
-manifiestos se escriban.
+paso no importa.
+
+10. Los 6 `Deployment`/`Service` de los servicios de aplicación, en el
+    orden sugerido por sus dependencias de arranque reales (confirmado
+    leyendo `go-common/auth/key_manager.go` y
+    `py_common/auth/key_manager_adapter.py`: los 5 restantes hacen un
+    fetch SÍNCRONO de JWKS contra identification-service en el
+    constructor, sin fallback -- igual que hsm-service):
+    ```sh
+    kubectl apply -f k8s/deployments/identification-service.yaml
+    kubectl apply -f k8s/deployments/certificate-service.yaml -f k8s/deployments/audit-service.yaml
+    kubectl apply -f k8s/deployments/signing-service.yaml -f k8s/deployments/verification-service.yaml
+    kubectl apply -f k8s/deployments/gateway-service.yaml
+    ```
+    Como con hsm-service/keycloak, ninguno usa un `initContainer` de
+    espera -- si identification-service todavía no respondió cuando un
+    pod arranca, ese pod crashea y Kubernetes lo reintenta solo
+    (`CrashLoopBackOff` normal), mismo criterio ya establecido. El orden
+    entre certificate-service/audit-service y entre signing-service/
+    verification-service no importa al arrancar (ninguno depende del
+    otro) -- es solo una sugerencia de secuencia, no una dependencia dura.
+    gateway-service al final porque es el único que el Ingress expone, y
+    sus propios `/health`/`/ready` no dependen de los otros 5 para
+    responder (solo sus endpoints de health agregado, que no son los que
+    usan las probes de este Deployment).
+11. Instalar ingress-nginx (Helm, fuera de este repo -- ver el comentario
+    de cabecera de `k8s/ingress/gateway-ingress.yaml`) y luego
+    `kubectl apply -f k8s/ingress/gateway-ingress.yaml`.
 
 ## Gaps conocidos, señalados a propósito
 
@@ -334,6 +368,59 @@ hsm-service, vía 6 agentes en paralelo releyendo `docker-compose.dev.yml`
   `docs/env-vars-inventory.md` para esos dos servicios también viene de
   ahí y no de ningún compose aislado -- coincide en ambos.
 
+**Resuelto: los 6 `Deployment`/`Service` de servicios de aplicación +
+Ingress** (lo que quedaba explícitamente fuera de alcance desde la
+primera ronda):
+
+- `k8s/deployments/{identification,certificate,signing,verification,audit,gateway}-service.yaml`
+  + `k8s/ingress/gateway-ingress.yaml` -- ver el árbol arriba y el
+  comentario de cabecera de cada archivo para el detalle completo. Orden
+  sugerido documentado en "Orden para aplicar todo desde cero" arriba,
+  basado en las dependencias de arranque reales (confirmadas leyendo
+  código, no el plan sugerido a ciegas): identification-service primero
+  (sin dependencias), los otros 5 dependen de él (fetch síncrono de JWKS
+  al boot, sin fallback -- mismo patrón que hsm-service, confirmado en
+  `go-common/auth/key_manager.go` y `py_common/auth/key_manager_adapter.py`),
+  gateway-service al final (único expuesto por el Ingress).
+- **Gap nuevo en audit-service**: `AUDIT_CONFIG_PATH` faltaba por
+  completo -- mismo patrón ya corregido para hsm-service/gateway-service
+  (Dockerfile Go multi-stage, no copia `config/` al runtime). Resuelto con
+  `k8s/configmaps/audit-service-config.yaml` (NUEVO, copia fiel de
+  `config.production.yaml`) + la variable en el Deployment.
+- **`AUDIT_AUTH_PUBLIC_KEY_PATH` de audit-service — dead en producción**:
+  estaba en `k8s/manifests/audit-service.secret.yaml` desde la ronda
+  anterior, pero `go-common/auth/key_manager.go`'s `loadInitialKeys()`
+  solo la lee en modo `development` -- en `production` usa JWKS
+  exclusivamente (mismo patrón que `HSM_AUTH_PUBLIC_KEY_PATH`, ya
+  corregido para hsm-service). Quitada de ese Secret y de
+  `k8s/envs/audit-service.env.example`.
+- **`AUTH_ISSUER`/`AUTH_AUDIENCE` también faltaban en signing-service y
+  verification-service** -- el mismo gap que ya se había corregido solo
+  para certificate-service, confirmado ahora también en estos dos
+  (`issuer=settings.AUTH_ISSUER or None` en su `main.py`, default vacío en
+  `config.py`: sin fijarla, acepta cualquier issuer/audience). Fijadas
+  como constantes literales directo en cada Deployment (no son secretos).
+- **Redis de signing-service/verification-service — resuelto**: reusa
+  `k8s/deployments/redis-gateway.yaml` (Service `redis`) en vez de un
+  Redis dedicado -- ambos solo hacen `PING` para su propio `/health`
+  (nunca escriben ninguna key), así que compartirlo con api-gateway no
+  tiene riesgo de colisión real. De paso se confirmó que
+  verification-service tiene el MISMO gap que ya se había encontrado para
+  signing-service: `app/interfaces/routes/health.py` es el mismo archivo
+  (py_common) en los tres servicios, así que `GET /api/v1/health` llama
+  `check_redis()` de forma incondicional también ahí -- el inventario
+  original decía que era condicional a `AUTH_TOKEN_CACHE_ENABLED`, pero
+  eso solo es cierto para el uso funcional (cache de validación de JWT),
+  no para el healthcheck. Agregado a
+  `k8s/manifests/verification-service.secret.yaml`/`.env.example`, que no
+  tenían ningún campo `REDIS_*` hasta ahora.
+- **Ingress Controller**: `ingressClassName: nginx` (ingress-nginx), no
+  instalado por este repo (Helm release, fuera de alcance, mismo criterio
+  que `terraform/modules/firewall/README.md` ya adelantaba). Sin
+  `tls:`/dominio todavía -- mismo estado "placeholder" que
+  `cors.allowed_origins` en `gateway-service-config.yaml`. Ver el
+  comentario de cabecera de `k8s/ingress/gateway-ingress.yaml`.
+
 **Sin resolver, señalados a propósito:**
 
 - **PVC de `identification-service-jwt-keys` es `ReadWriteOnce`**: solo un
@@ -341,15 +428,14 @@ hsm-service, vía 6 agentes en paralelo releyendo `docker-compose.dev.yml`
   una réplica, esto es un cuello de botella real (no resuelto; depende de
   si `do-block-storage` en DOKS soporta `ReadWriteMany`, que normalmente
   no soporta para volúmenes de bloque).
-- **signing-service: `REDIS_*` no estaba en el inventario ni en los
-  manifiestos** (solo se había señalado para verification-service). `GET
-  /health` llama `check_redis()` sin depender de
-  `AUTH_TOKEN_CACHE_ENABLED` — sin Redis real, el pod siempre reporta
-  `status: "degraded"`. Se agregaron los campos a
-  `k8s/manifests/signing-service.secret.yaml`/`.env.example`, pero falta
-  decidir: ¿Redis dedicado para signing-service/verification-service, o
-  reusar `k8s/deployments/redis-gateway.yaml`? No se decidió
-  unilateralmente acá.
+- **NodePort range para el Load Balancer de DigitalOcean**: según cómo
+  exponga el Service el Helm release de ingress-nginx todavía sin
+  instalar (`type: LoadBalancer` con `externalTrafficPolicy`, NodePort, o
+  `hostNetwork`), puede hacer falta abrir el rango de NodePort
+  (30000-32767 por default) en `terraform/modules/firewall` además de
+  80/443 -- se confirma recién cuando se instale el controller, ya
+  señalado en `terraform/modules/firewall/README.md` y repetido en
+  `k8s/ingress/gateway-ingress.yaml`.
 - **Campos vestigiales en `hsm-secrets`** (`master-key`, `v1`, y ahora
   también `so-pin`): se preservan en la migración por no poder descartar
   con 100% de certeza que nada los lea fuera de este repo — candidatos a
@@ -361,8 +447,11 @@ hsm-service, vía 6 agentes en paralelo releyendo `docker-compose.dev.yml`
   auto-init que ya no se usa) en la imagen `ghcr.io/digsigna/softhsm/softhsm:1.0.0`.
   No afecta a este Deployment (ya no se invoca ese script), pero es un gap
   real en otro repo que vale la pena señalar al equipo de softhsm.
-- **`Deployment`/`Service`/`Ingress` de los otros 6 servicios**
-  (identification-service, certificate-service, signing-service,
-  verification-service, gateway-service, audit-service): no escritos —
-  no había manifiesto de referencia previo para ellos como sí había para
-  hsm-service en `softhsm/k8s/`.
+- **Imagen de los 6 Deployments nuevos: placeholder `REPLACE_VERSION`**
+  (`ghcr.io/digsigna/<servicio>:REPLACE_VERSION`) -- el CI de cada repo
+  tagea `1.0.${run_number}` + `latest` (ver su `.github/workflows/ci.yml`),
+  pero ese número cambia con cada build y no hay forma de confirmarlo
+  desde este repo sin acceso a GHCR/Actions. Reemplazar por el tag real
+  antes de aplicar cada Deployment -- nunca dejar `latest` (mismo criterio
+  ya documentado para `migrations-job.yaml`/`hsm-service.yaml`: un
+  incidente real con un tag no re-pulleado).

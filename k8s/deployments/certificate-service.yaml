@@ -1,0 +1,173 @@
+# NUEVO -- ver k8s/README.md para el orden sugerido de los 6
+# Deployments nuevos. Depende de identification-service al arrancar:
+# JWTValidatorAdapter (py-common/auth/key_manager_adapter.py) hace el
+# fetch inicial de JWKS de forma SÍNCRONA en el constructor (confirmado
+# leyendo el código, no solo el comentario de docker-compose.dev.yml) --
+# sin fallback, así que identification-service tiene que estar arriba
+# primero. hsm-service solo se usa por request (HSM_BACKEND=remote,
+# ADR-005), no al boot -- no es un hard-dependency de arranque.
+#
+# Imagen: placeholder REPLACE_VERSION, ver la nota de
+# k8s/deployments/identification-service.yaml (mismo criterio, los 6
+# servicios nuevos).
+#
+# CONFIG_FILE: a diferencia de hsm-service/gateway-service/audit-service
+# (Go, build multi-stage que NO copia config/ al runtime), el Dockerfile de
+# este servicio es Python con `COPY . .` en el stage de producción -- el
+# config.yaml SÍ queda horneado en la imagen en /app/config/config.yaml
+# (confirmado leyendo certificate-service/Dockerfile). No hace falta
+# ningún ConfigMap acá, a diferencia de esos otros tres.
+#
+# PRE-REQUISITOS: Secret `certificate-service-env` (mecanismo 1), Secret
+# `certificate-service-audit-key` (mecanismo 2), `ghcr-creds`.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: certificate-service
+  namespace: digsigna
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: certificate-service
+  template:
+    metadata:
+      labels:
+        app: certificate-service
+    spec:
+      imagePullSecrets:
+      - name: ghcr-creds
+      containers:
+      - name: certificate-service
+        image: ghcr.io/digsigna/certificate-service:REPLACE_VERSION
+        imagePullPolicy: Always
+        env:
+        - name: ENVIRONMENT
+          value: "production"
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: CONFIG_FILE
+          value: "/app/config/config.yaml"
+
+        - name: AUTH_MODE
+          value: "production"
+        - name: AUTH_TOKEN_CACHE_ENABLED
+          value: "false"
+
+        - name: HSM_BACKEND
+          value: "remote"
+        - name: HSM_SERVICE_TIMEOUT
+          value: "5s"
+        - name: IDENTITY_SERVICE_BACKEND
+          value: "remote"
+        - name: IDENTITY_SERVICE_TIMEOUT
+          value: "5s"
+
+        - name: AUDIT_ENABLED
+          value: "true"
+        - name: AUDIT_STRATEGY
+          value: "hybrid"
+
+        - name: DB_URL
+          valueFrom:
+            secretKeyRef:
+              name: certificate-service-env
+              key: DB_URL
+        - name: HSM_SERVICE_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: certificate-service-env
+              key: HSM_SERVICE_BASE_URL
+        - name: IDENTITY_SERVICE_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: certificate-service-env
+              key: IDENTITY_SERVICE_BASE_URL
+        - name: AUTH_JWKS_URL
+          valueFrom:
+            secretKeyRef:
+              name: certificate-service-env
+              key: AUTH_JWKS_URL
+        - name: AUTH_ISSUER
+          valueFrom:
+            secretKeyRef:
+              name: certificate-service-env
+              key: AUTH_ISSUER
+        - name: AUTH_AUDIENCE
+          valueFrom:
+            secretKeyRef:
+              name: certificate-service-env
+              key: AUTH_AUDIENCE
+        - name: AUDIT_HTTP_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: certificate-service-env
+              key: AUDIT_HTTP_BASE_URL
+
+        - name: AUDIT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: certificate-service-audit-key
+              key: api_key
+
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+
+        # GET /api/v1/health (py_common, compartido con signing/
+        # verification-service) siempre devuelve 200, incluso con
+        # status "degraded" en el body (confirmado leyendo
+        # app/interfaces/routes/health.py -- nunca levanta HTTPException,
+        # solo cambia el campo "status" del JSON). No es una señal de
+        # readiness real para k8s (un httpGet probe solo mira el código
+        # HTTP) -- se usa igual por ser la única disponible, mismo
+        # criterio para signing-service/verification-service. Gap
+        # señalado, no resuelto acá (sería un cambio de código, fuera de
+        # alcance de este repo).
+        livenessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: 8000
+            scheme: HTTP
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: 8000
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+
+        resources:
+          requests:
+            memory: "160Mi"
+            cpu: "100m"
+            ephemeral-storage: "256Mi"
+          limits:
+            memory: "320Mi"
+            cpu: "300m"
+            ephemeral-storage: "512Mi"
+---
+# Nombre "certificate-service" a propósito -- coincide con
+# HSM_SERVICE_BASE_URL/IDENTITY_SERVICE_BASE_URL de otros servicios y con
+# CERTIFICATE_SERVICE_URL de identification-service, ya fijados a
+# "http://certificate-service:8000" en varios env.example.
+apiVersion: v1
+kind: Service
+metadata:
+  name: certificate-service
+  namespace: digsigna
+spec:
+  selector:
+    app: certificate-service
+  ports:
+  - port: 8000
+    targetPort: 8000
+    protocol: TCP

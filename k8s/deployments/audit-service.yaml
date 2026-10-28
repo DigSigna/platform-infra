@@ -1,0 +1,182 @@
+# NUEVO -- ver k8s/README.md para el orden sugerido. Depende de
+# identification-service al arrancar EN PRODUCCIÓN: con AUDIT_AUTH_MODE
+# "production" (fijado abajo), go-common/auth.NewKeyManagerAdapter hace el
+# mismo fetch síncrono de JWKS que hsm-service, sin fallback -- confirmado
+# leyendo go-common/auth/key_manager.go (loadInitialKeys() llama
+# fetchJWKS() directo en modo production), llamado desde cmd/api/main.go
+# antes de levantar el router. En dev esto no aplica porque
+# docker-compose.dev.yml corre AUDIT_AUTH_MODE=development con una llave
+# local -- otra razón más para no copiar ese modo acá tal cual.
+#
+# Dos correcciones encontradas leyendo el código real (no asumido),
+# mismo tipo de gap que ya se corrigió para hsm-service/gateway-service:
+#
+#   1. Gap nuevo: AUDIT_CONFIG_PATH faltaba por completo.
+#      internal/infrastructure/config/app_config.go's LoadConfig() default
+#      es "config/config.<AUDIT_ENVIRONMENT>.yaml", relativo al CWD del
+#      proceso (/app, WORKDIR del Dockerfile) -- y el Dockerfile de
+#      runtime de este servicio (multi-stage, Go) solo copia el binario
+#      compilado, nunca config/ (confirmado leyendo audit-service/Dockerfile).
+#      Sin AUDIT_CONFIG_PATH apuntando a un ConfigMap montado, el proceso
+#      no encuentra ningún archivo de config y no arranca (mismo
+#      incidente ya documentado para hsm-service). Resuelto con
+#      k8s/configmaps/audit-service-config.yaml (copia fiel de
+#      audit-service/config/config.production.yaml) + esta variable.
+#   2. AUDIT_AUTH_PUBLIC_KEY_PATH, que SÍ estaba en
+#      k8s/manifests/audit-service.secret.yaml, no tiene ningún consumidor
+#      en modo production -- go-common/auth/key_manager.go's
+#      loadInitialKeys() solo lee PublicKeyPath cuando Mode ==
+#      ModeDevelopment; en production usa JWKSUrl exclusivamente (mismo
+#      patrón ya documentado para HSM_AUTH_PUBLIC_KEY_PATH en
+#      k8s/deployments/hsm-service.yaml). Quitado de ahí y de
+#      k8s/envs/audit-service.env.example -- ver esos dos archivos.
+#
+# Imagen: placeholder REPLACE_VERSION, ver la nota de
+# k8s/deployments/identification-service.yaml.
+#
+# PRE-REQUISITOS: Secret `audit-service-env` (mecanismo 1), Secret
+# `audit-service-producer-keys` (mecanismo 2 -- forma distinta a los otros
+# 5, ver k8s/service-keys/audit-service.secret.yaml), ConfigMap
+# `audit-service-config` (NUEVO, ver k8s/configmaps/audit-service-config.yaml),
+# `ghcr-creds`.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: audit-service
+  namespace: digsigna
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: audit-service
+  template:
+    metadata:
+      labels:
+        app: audit-service
+    spec:
+      imagePullSecrets:
+      - name: ghcr-creds
+      volumes:
+      - name: audit-service-config
+        configMap:
+          name: audit-service-config
+      containers:
+      - name: audit-service
+        image: ghcr.io/digsigna/audit-service:REPLACE_VERSION
+        imagePullPolicy: Always
+        env:
+        - name: AUDIT_CONFIG_PATH
+          value: "/etc/audit-service/config.yaml"
+        - name: AUDIT_ENVIRONMENT
+          value: "production"
+        - name: AUDIT_AUTH_MODE
+          value: "production"
+
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: audit-service-env
+              key: DATABASE_URL
+        - name: AUDIT_AUTH_JWKS_URL
+          valueFrom:
+            secretKeyRef:
+              name: audit-service-env
+              key: AUDIT_AUTH_JWKS_URL
+
+        # Las 6 AUDIT_KEY_<SERVICIO> -- mecanismo 2, Secret aparte
+        # (audit-service-producer-keys), nunca audit-service-env. Ver
+        # k8s/service-keys/audit-service.secret.yaml.
+        - name: AUDIT_KEY_HSM_SERVICE
+          valueFrom:
+            secretKeyRef:
+              name: audit-service-producer-keys
+              key: AUDIT_KEY_HSM_SERVICE
+        - name: AUDIT_KEY_CERTIFICATE_SERVICE
+          valueFrom:
+            secretKeyRef:
+              name: audit-service-producer-keys
+              key: AUDIT_KEY_CERTIFICATE_SERVICE
+        - name: AUDIT_KEY_SIGNING_SERVICE
+          valueFrom:
+            secretKeyRef:
+              name: audit-service-producer-keys
+              key: AUDIT_KEY_SIGNING_SERVICE
+        - name: AUDIT_KEY_IDENTIFICATION_SERVICE
+          valueFrom:
+            secretKeyRef:
+              name: audit-service-producer-keys
+              key: AUDIT_KEY_IDENTIFICATION_SERVICE
+        - name: AUDIT_KEY_VERIFICATION_SERVICE
+          valueFrom:
+            secretKeyRef:
+              name: audit-service-producer-keys
+              key: AUDIT_KEY_VERIFICATION_SERVICE
+        - name: AUDIT_KEY_API_GATEWAY
+          valueFrom:
+            secretKeyRef:
+              name: audit-service-producer-keys
+              key: AUDIT_KEY_API_GATEWAY
+
+        volumeMounts:
+        - name: audit-service-config
+          mountPath: /etc/audit-service/config.yaml
+          subPath: config.yaml
+
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+
+        # /health reporta solo que el proceso está arriba -- no verifica
+        # DB ni ninguna dependencia (confirmado leyendo
+        # internal/interfaces/http/routes/router.go's healthCheck(), que
+        # devuelve un 200 fijo). /ready tampoco: es un stub fijo
+        # `{"status":"ready"}`, sin ningún chequeo real -- gap señalado,
+        # no resuelto acá (cambio de código, fuera de alcance). Se usa
+        # /health para ambas probes por ser funcionalmente idéntico a
+        # /ready hoy.
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+
+        resources:
+          requests:
+            memory: "192Mi"
+            cpu: "150m"
+            ephemeral-storage: "256Mi"
+          limits:
+            memory: "384Mi"
+            cpu: "400m"
+            ephemeral-storage: "512Mi"
+---
+# Nombre "audit-service" a propósito -- coincide con AUDIT_SERVICE_URL/
+# AUDIT_HTTP_BASE_URL/GATEWAY_AUDIT_HTTP_BASE_URL de los otros 5
+# servicios, ya fijados a "http://audit-service:8080" en sus env.example.
+apiVersion: v1
+kind: Service
+metadata:
+  name: audit-service
+  namespace: digsigna
+spec:
+  selector:
+    app: audit-service
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP

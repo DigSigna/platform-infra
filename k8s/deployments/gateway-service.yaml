@@ -1,0 +1,149 @@
+# NUEVO -- último de los 6 Deployments nuevos en el orden sugerido (ver
+# k8s/README.md): es el único que el futuro Ingress expone, y solo tiene
+# sentido levantarlo al final porque sus propios health checks agregados
+# (routes.health_paths, gateway-service/config/config.production.yaml)
+# consultan a los otros 5 -- aunque /health y /ready del gateway en sí no
+# dependen de que estén arriba para responder (ver router.go), levantarlo
+# antes no sirve de nada funcional todavía.
+#
+# Sin PVC/DB propia (stateless, ver el comentario de cabecera de
+# gateway-service/docker-compose.dev.yml). GATEWAY_REDIS_ADDRESS apunta al
+# mismo Redis que ya resuelve k8s/deployments/redis-gateway.yaml -- no al
+# "redis" reusado por signing/verification-service como health-check
+# trivial, es el mismo Service pero este sí lo usa para datos reales
+# (rate limiting), confirmado en docs/env-vars-inventory.md.
+#
+# Imagen: placeholder REPLACE_VERSION, ver la nota de
+# k8s/deployments/identification-service.yaml.
+#
+# PRE-REQUISITOS: Secret `gateway-service-env` (mecanismo 1, ya con
+# GATEWAY_ENVIRONMENT/GATEWAY_CONFIG_PATH fijados), Secret
+# `gateway-service-audit-key` (mecanismo 2), ConfigMap
+# `gateway-service-config` (ya existía, ver k8s/configmaps/), Deployment
+# `redis-gateway` (ya existía), `ghcr-creds`.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-service
+  namespace: digsigna
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway-service
+  template:
+    metadata:
+      labels:
+        app: gateway-service
+    spec:
+      imagePullSecrets:
+      - name: ghcr-creds
+      volumes:
+      - name: gateway-service-config
+        configMap:
+          name: gateway-service-config
+      containers:
+      - name: gateway-service
+        image: ghcr.io/digsigna/gateway-service:REPLACE_VERSION
+        imagePullPolicy: Always
+        env:
+        - name: GATEWAY_AUTH_MODE
+          value: "production"
+        - name: GATEWAY_AUTH_JWKS_CACHE_MINUTES
+          value: "60"
+
+        - name: GATEWAY_ENVIRONMENT
+          valueFrom:
+            secretKeyRef:
+              name: gateway-service-env
+              key: GATEWAY_ENVIRONMENT
+        - name: GATEWAY_CONFIG_PATH
+          valueFrom:
+            secretKeyRef:
+              name: gateway-service-env
+              key: GATEWAY_CONFIG_PATH
+        - name: GATEWAY_AUTH_JWKS_URL
+          valueFrom:
+            secretKeyRef:
+              name: gateway-service-env
+              key: GATEWAY_AUTH_JWKS_URL
+        - name: GATEWAY_REDIS_ADDRESS
+          valueFrom:
+            secretKeyRef:
+              name: gateway-service-env
+              key: GATEWAY_REDIS_ADDRESS
+        - name: GATEWAY_AUDIT_HTTP_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: gateway-service-env
+              key: GATEWAY_AUDIT_HTTP_BASE_URL
+
+        - name: AUDIT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: gateway-service-audit-key
+              key: api_key
+
+        volumeMounts:
+        - name: gateway-service-config
+          mountPath: /etc/gateway-service/config.yaml
+          subPath: config.yaml
+
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+
+        # /health: liveness pura, siempre 200 (router.go). /ready: SÍ
+        # verifica dependencias reales del propio gateway (JWKS cargado +
+        # ping al rate limiter) y devuelve 503 si alguna falla -- el
+        # propio código lo documenta como pensado para un readiness probe
+        # de k8s (gateway-plan.md item 7). El mejor de los 6 nuevos en
+        # este sentido.
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+
+        resources:
+          requests:
+            memory: "192Mi"
+            cpu: "150m"
+            ephemeral-storage: "256Mi"
+          limits:
+            memory: "384Mi"
+            cpu: "400m"
+            ephemeral-storage: "512Mi"
+---
+# Nombre "gateway-service" a propósito, y el único de los 6 que
+# k8s/ingress.yaml referencia -- los otros 5 Service son ClusterIP
+# internos, nunca el backend de un Ingress (ver terraform/modules/firewall,
+# regla de diseño: solo 80/443 públicos, hacia el futuro Ingress, nunca
+# directo a un backend).
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-service
+  namespace: digsigna
+spec:
+  selector:
+    app: gateway-service
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP

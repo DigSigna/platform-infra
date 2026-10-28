@@ -1,0 +1,185 @@
+# NUEVO -- ver k8s/README.md para el orden sugerido. Depende de
+# identification-service al arrancar (mismo fetch síncrono de JWKS que
+# certificate-service, confirmado en py_common/auth/key_manager_adapter.py
+# -- código compartido, mismo comportamiento). hsm-service y
+# certificate-service solo se usan por request (HSM_BACKEND=remote,
+# verify-pin contra certificate-service, ADR-005), no al boot.
+#
+# Gap encontrado leyendo app/main.py (no asumido): AUTH_ISSUER/AUTH_AUDIENCE
+# faltaban por completo en k8s/manifests/signing-service.secret.yaml, igual
+# que el gap ya corregido para certificate-service -- `issuer=settings.AUTH_ISSUER
+# or None` en main.py manda None (acepta cualquier issuer) si la variable
+# está vacía, que es el default de app/core/config.py. Fijados acá como
+# constantes literales (no son secretos), no agregados al Secret.
+#
+# CONFIG_FILE: mismo criterio que certificate-service -- Dockerfile Python
+# con `COPY . .`, config.yaml ya horneado en /app/config/config.yaml, sin
+# ConfigMap necesario.
+#
+# REDIS_*: resuelto reusando k8s/deployments/redis-gateway.yaml (ver
+# k8s/manifests/signing-service.secret.yaml) -- GET /api/v1/health llama
+# check_redis() de forma incondicional, sin esto el pod siempre reporta
+# "degraded" (no bloquea requests reales, solo el body de /health).
+#
+# Imagen: placeholder REPLACE_VERSION, ver la nota de
+# k8s/deployments/identification-service.yaml.
+#
+# PRE-REQUISITOS: Secret `signing-service-env` (mecanismo 1), Secret
+# `signing-service-audit-key` (mecanismo 2), `k8s/deployments/redis-gateway.yaml`
+# ya aplicado, `ghcr-creds`.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: signing-service
+  namespace: digsigna
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: signing-service
+  template:
+    metadata:
+      labels:
+        app: signing-service
+    spec:
+      imagePullSecrets:
+      - name: ghcr-creds
+      containers:
+      - name: signing-service
+        image: ghcr.io/digsigna/signing-service:REPLACE_VERSION
+        imagePullPolicy: Always
+        env:
+        - name: ENVIRONMENT
+          value: "production"
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: CONFIG_FILE
+          value: "/app/config/config.yaml"
+
+        - name: AUTH_MODE
+          value: "production"
+        - name: AUTH_ISSUER
+          value: "identification-service"
+        - name: AUTH_AUDIENCE
+          value: "signing-service"
+        - name: AUTH_TOKEN_CACHE_ENABLED
+          value: "false"
+
+        - name: HSM_BACKEND
+          value: "remote"
+        - name: HSM_SERVICE_TIMEOUT
+          value: "5s"
+        - name: CERTIFICATE_SERVICE_TIMEOUT
+          value: "5s"
+
+        - name: AUDIT_ENABLED
+          value: "true"
+        - name: AUDIT_STRATEGY
+          value: "hybrid"
+
+        - name: DB_URL
+          valueFrom:
+            secretKeyRef:
+              name: signing-service-env
+              key: DB_URL
+        - name: HSM_SERVICE_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: signing-service-env
+              key: HSM_SERVICE_BASE_URL
+        - name: CERTIFICATE_SERVICE_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: signing-service-env
+              key: CERTIFICATE_SERVICE_BASE_URL
+        - name: AUTH_JWKS_URL
+          valueFrom:
+            secretKeyRef:
+              name: signing-service-env
+              key: AUTH_JWKS_URL
+        - name: AUDIT_HTTP_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: signing-service-env
+              key: AUDIT_HTTP_BASE_URL
+        - name: REDIS_HOST
+          valueFrom:
+            secretKeyRef:
+              name: signing-service-env
+              key: REDIS_HOST
+        - name: REDIS_PORT
+          valueFrom:
+            secretKeyRef:
+              name: signing-service-env
+              key: REDIS_PORT
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: signing-service-env
+              key: REDIS_PASSWORD
+        - name: REDIS_DB
+          valueFrom:
+            secretKeyRef:
+              name: signing-service-env
+              key: REDIS_DB
+
+        - name: AUDIT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: signing-service-audit-key
+              key: api_key
+
+        ports:
+        - containerPort: 8001
+          name: http
+          protocol: TCP
+
+        # Mismo caveat que certificate-service -- GET /api/v1/health
+        # (py_common) siempre devuelve 200, ver ese Deployment.
+        livenessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: 8001
+            scheme: HTTP
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: 8001
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+
+        resources:
+          requests:
+            memory: "160Mi"
+            cpu: "100m"
+            ephemeral-storage: "256Mi"
+          limits:
+            memory: "320Mi"
+            cpu: "300m"
+            ephemeral-storage: "512Mi"
+---
+# Nombre "signing-service" a propósito -- mismo patrón de nombre de
+# Service = nombre de servicio en hsm-network que usan los otros 5
+# (ningún caller interno lo apunta todavía por URL propia, a diferencia de
+# certificate-service/identification-service/audit-service -- lo expone
+# gateway-service como backend proxied, ver su config/config.production.yaml).
+apiVersion: v1
+kind: Service
+metadata:
+  name: signing-service
+  namespace: digsigna
+spec:
+  selector:
+    app: signing-service
+  ports:
+  - port: 8001
+    targetPort: 8001
+    protocol: TCP

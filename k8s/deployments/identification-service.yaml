@@ -1,0 +1,186 @@
+# NUEVO -- primer Deployment de los 6 servicios de aplicación que estaban
+# fuera de alcance en las rondas anteriores (ver k8s/README.md). Va primero
+# en el orden de aplicación: a diferencia de los otros 5, no depende de
+# ningún otro servicio al arrancar (Keycloak es perezoso, ver
+# src/core/health/health-check.js y el comentario de ordering en
+# k8s/deployments/keycloak.yaml) -- los otros 5 sí dependen de este
+# (fetch de JWKS al boot, sin fallback, confirmado leyendo
+# go-common/auth/key_manager.go y py_common/auth/key_manager_adapter.py:
+# ambos hacen el fetch inicial de forma síncrona en el constructor, nunca
+# perezoso).
+#
+# Imagen: ghcr.io/digsigna/identification-service:REPLACE_VERSION --
+# placeholder a propósito. El pipeline de CI de este repo tagea
+# `1.0.${run_number}` + `latest` (ver .github/workflows/ci.yml), pero este
+# número cambia con cada build y no hay forma de confirmarlo desde acá sin
+# acceso a GHCR/Actions -- reemplazar por el tag real antes de aplicar,
+# nunca dejar `latest` (ver la razón ya documentada en
+# k8s/jobs/migrations-job.yaml: un incidente real con un tag no re-pulleado).
+#
+# PRE-REQUISITOS: Secret `identification-service-env` (mecanismo 1),
+# Secret `identification-service-audit-key` (mecanismo 2), PVC
+# `identification-service-jwt-keys` ya aplicado (ver
+# k8s/storage/identification-service-jwt-keys-pvc.yaml -- sin esto el par
+# RSA de JWT no sobrevive un restart del pod), `ghcr-creds`.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: identification-service
+  namespace: digsigna
+spec:
+  replicas: 1 # el PVC de JWT keys es ReadWriteOnce -- ver el gap ya señalado en k8s/README.md antes de subir este número
+  selector:
+    matchLabels:
+      app: identification-service
+  template:
+    metadata:
+      labels:
+        app: identification-service
+    spec:
+      imagePullSecrets:
+      - name: ghcr-creds
+      volumes:
+      - name: jwt-keys
+        persistentVolumeClaim:
+          claimName: identification-service-jwt-keys
+      containers:
+      - name: identification-service
+        image: ghcr.io/digsigna/identification-service:REPLACE_VERSION
+        imagePullPolicy: Always
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "3000"
+
+        - name: DB_URL
+          valueFrom:
+            secretKeyRef:
+              name: identification-service-env
+              key: DB_URL
+        - name: KEYCLOAK_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: identification-service-env
+              key: KEYCLOAK_BASE_URL
+        - name: KEYCLOAK_ADMIN_USER
+          valueFrom:
+            secretKeyRef:
+              name: identification-service-env
+              key: KEYCLOAK_ADMIN_USER
+        - name: KEYCLOAK_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: identification-service-env
+              key: KEYCLOAK_ADMIN_PASSWORD
+        - name: BOOTSTRAP_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: identification-service-env
+              key: BOOTSTRAP_SECRET
+        - name: HSM_SERVICE_URL
+          valueFrom:
+            secretKeyRef:
+              name: identification-service-env
+              key: HSM_SERVICE_URL
+        - name: CERTIFICATE_SERVICE_URL
+          valueFrom:
+            secretKeyRef:
+              name: identification-service-env
+              key: CERTIFICATE_SERVICE_URL
+        - name: AUDIT_SERVICE_URL
+          valueFrom:
+            secretKeyRef:
+              name: identification-service-env
+              key: AUDIT_SERVICE_URL
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: identification-service-env
+              key: REDIS_URL
+        - name: ALLOWED_ORIGINS
+          valueFrom:
+            secretKeyRef:
+              name: identification-service-env
+              key: ALLOWED_ORIGINS
+        - name: JWT_ISSUER
+          valueFrom:
+            secretKeyRef:
+              name: identification-service-env
+              key: JWT_ISSUER
+        - name: JWT_SIGNING_KEYS_DIR
+          valueFrom:
+            secretKeyRef:
+              name: identification-service-env
+              key: JWT_SIGNING_KEYS_DIR
+
+        - name: AUDIT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: identification-service-audit-key
+              key: api_key
+
+        volumeMounts:
+        - name: jwt-keys
+          # Tiene que coincidir con JWT_SIGNING_KEYS_DIR arriba -- ver
+          # k8s/storage/identification-service-jwt-keys-pvc.yaml.
+          mountPath: /var/lib/identification-service/jwt-keys
+
+        ports:
+        - containerPort: 3000
+          name: http
+          protocol: TCP
+
+        # /api/v1/health/live y /api/v1/health/ready existen en el código
+        # a propósito para esto (src/interfaces/routes/health-routes.js) --
+        # a diferencia del /health genérico (que mezcla ambos y devuelve
+        # 503 si Redis configurada falla), son probes reales con el
+        # significado correcto de cada uno.
+        livenessProbe:
+          httpGet:
+            path: /api/v1/health/live
+            port: 3000
+            scheme: HTTP
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /api/v1/health/ready
+            port: 3000
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+
+        resources:
+          requests:
+            memory: "192Mi"
+            cpu: "150m"
+            ephemeral-storage: "256Mi"
+          limits:
+            memory: "384Mi"
+            cpu: "400m"
+            ephemeral-storage: "512Mi"
+---
+# Nombre "identification-service" a propósito -- coincide con las URLs que
+# YA están fijadas (no placeholder) en varios Secrets de otros servicios:
+# KEYCLOAK_BASE_URL aparte, pero AUTH_JWKS_URL de certificate/signing/
+# verification-service y GATEWAY_AUTH_JWKS_URL de gateway-service ya
+# apuntan a "http://identification-service:3000/..." (ver
+# k8s/envs/*.env.example) -- resuelve sin traducir nada.
+apiVersion: v1
+kind: Service
+metadata:
+  name: identification-service
+  namespace: digsigna
+spec:
+  selector:
+    app: identification-service
+  ports:
+  - port: 3000
+    targetPort: 3000
+    protocol: TCP

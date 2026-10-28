@@ -1,0 +1,58 @@
+# NUEVO -- único Ingress de este repo, a propósito: terraform/modules/firewall
+# ya documenta la regla de diseño (solo 80/443 públicos, apuntando siempre
+# a gateway-service, nunca a los otros 5 backends) -- este manifiesto es
+# la mitad de Kubernetes de esa regla, el firewall de DigitalOcean es la
+# otra mitad.
+#
+# Decisiones que quedaron explícitamente sin resolver en
+# terraform/modules/firewall/README.md ("se decide cuando se instale el
+# Ingress, no antes") y que este archivo sí tiene que fijar para existir:
+#
+#   1. Ingress Controller: ingress-nginx (ingressClassName: nginx) -- el
+#      default de facto en DOKS (tutorial oficial de DigitalOcean), no
+#      instalado por este repo. Instalarlo es un paso separado (Helm
+#      release, fuera de alcance de k8s/ -- mismo criterio que
+#      terraform/modules/firewall/README.md ya adelantaba: "se agrega
+#      después, como Helm release o manifiesto de Kubernetes, no en este
+#      repo"):
+#        helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+#        helm install ingress-nginx ingress-nginx/ingress-nginx -n digsigna
+#      Ese release crea un Service `type: LoadBalancer` que DigitalOcean's
+#      Cloud Controller Manager traduce en un Load Balancer real con IP
+#      pública -- ESE es el recurso que debe recibir el tráfico de
+#      80/443 que el firewall ya abre, no este Ingress directamente.
+#   2. Sin TLS/cert-manager todavía: no hay dominio real decidido (mismo
+#      estado que `cors.allowed_origins` en
+#      k8s/configmaps/gateway-service-config.yaml -- placeholder hasta
+#      tener el dominio real del frontend). Sin bloque `tls:` ni
+#      anotaciones de cert-manager -- agregar cuando haya dominio +
+#      certificado reales, no antes.
+#   3. Sin regla de `host:` -- mismo motivo que el punto 2. Esto hace de
+#      este Ingress el backend default de la IngressClass "nginx" (sirve
+#      cualquier Host header que llegue) hasta que haya un dominio real
+#      para acotarlo.
+#
+# Pendiente de validar con datos reales, ya señalado en
+# terraform/modules/firewall/README.md: según cómo exponga el Service el
+# Helm release de ingress-nginx (`type: LoadBalancer` con
+# `externalTrafficPolicy`, NodePort, o `hostNetwork`), puede hacer falta
+# abrir el rango de NodePort (30000-32767 por default) en el firewall
+# además de 80/443 -- se confirma cuando se instale el controller, no
+# antes.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gateway-ingress
+  namespace: digsigna
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: gateway-service
+            port:
+              number: 8080
