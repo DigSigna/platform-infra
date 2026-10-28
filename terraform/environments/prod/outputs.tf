@@ -26,3 +26,7 @@ output "database_private_host" {
 output "database_port" {
   value = module.database.port
 }
+
+output "firewall_id" {
+  value = module.firewall.firewall_id
+}

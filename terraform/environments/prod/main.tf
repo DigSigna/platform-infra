@@ -1,3 +1,11 @@
+locals {
+  # Tag propio del node pool de este cluster, usado por el módulo firewall
+  # para saber a qué droplets aplicarse. No es un valor a elección libre:
+  # una vez aplicado, hay que confirmar con `doctl compute droplet list
+  # --tag-name <este-tag>` que efectivamente etiquetó los nodos.
+  doks_node_tag = "${var.doks_name}-nodes"
+}
+
 module "network" {
   source = "../../modules/network"
 
@@ -19,7 +27,18 @@ module "doks" {
   node_size           = var.node_size
   node_pool_min_nodes = var.node_pool_min_nodes
   node_pool_max_nodes = var.node_pool_max_nodes
-  tags                = var.tags
+  tags                = concat(var.tags, [local.doks_node_tag])
+}
+
+# Único punto de entrada público: 80/443 hacia el futuro Ingress. Los 6
+# backends nunca se exponen por este firewall — solo api-gateway, detrás
+# del Ingress, termina en estos puertos.
+module "firewall" {
+  source = "../../modules/firewall"
+
+  name            = "${var.doks_name}-ingress"
+  target_tag      = local.doks_node_tag
+  doks_cluster_id = module.doks.cluster_id
 }
 
 # Recurso existente: importar antes de aplicar. Ver modules/database/README.md.
