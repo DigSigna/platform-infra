@@ -39,11 +39,12 @@ k8s/
     identification-service-jwt-keys-pvc.yaml  # NUEVO -- reemplaza el Secret de JWT, ver nota abajo
   deployments/
     hsm-service.yaml             # migrado y corregido contra docker-compose.dev.yml/código real -- sin initContainer de auto-init, auth vía JWKS production
-    softhsm-standalone.yaml       # migrado de softhsm/k8s/ -- FLAG: posible duplicado sin uso, ver el archivo
     redis-gateway.yaml            # NUEVO -- Redis real para /ready de api-gateway (Service "redis")
+    keycloak.yaml                  # NUEVO -- Deployment+Service, `start` (no start-dev) contra MySQL, sin keycloak-seed (ver el archivo)
   shared-secrets/             # Secrets compartidos entre varios servicios
     mysql-secrets.secret.yaml   # DSN de la MySQL gestionada (migrado de softhsm/k8s/)
     hsm-secrets.secret.yaml     # PIN/SO-PIN/master keys de SoftHSM (migrado de softhsm/k8s/)
+    keycloak-secrets.secret.yaml # NUEVO -- admin bootstrap + credenciales del esquema "keycloak" propio en la misma MySQL
   jobs/
     migrations-job.yaml         # migrado de softhsm/k8s/ -- ya no hardcodea el DSN, y corregido contra el ENTRYPOINT real de la imagen
   manifests/                   # un Secret por servicio con SU config/secrets propios
@@ -79,6 +80,28 @@ kubectl create secret docker-registry ghcr-creds \
   --docker-email=<email> \
   -n digsigna
 ```
+
+## Pre-requisito nuevo, encontrado al agregar Keycloak: imagen propia + esquema de MySQL
+
+`k8s/deployments/keycloak.yaml` (NUEVO -- ver ese archivo para las tres
+decisiones de diseño resueltas) necesita, antes de aplicarse:
+
+1. Construir y pushear `ghcr.io/digsigna/keycloak:22.0.0-mysql` desde
+   `images/keycloak/Dockerfile` (nuevo directorio, sin pipeline de CI
+   todavía -- manual, igual criterio que `ghcr-creds`). La imagen pública
+   `quay.io/keycloak/keycloak:22.0.0` que usa dev no trae el driver JDBC de
+   MySQL (licencia GPL) -- hace falta una imagen propia con `kc.sh build
+   --db=mysql`, ver el Dockerfile para el detalle completo.
+2. Crear a mano, en la misma instancia de MySQL gestionada que ya usa
+   `mysql-secrets`, un esquema `keycloak` propio (no el `digsigna`
+   compartido) + un usuario con privilegios ahí -- `migrations/scripts/
+   setup-db-users.sh` no lo cubre, sus GRANT son todos sobre `digsigna.*`.
+   Ver el comentario de cabecera de `k8s/shared-secrets/keycloak-secrets.secret.yaml`
+   para el SQL exacto.
+3. Aplicar el Secret `keycloak-secrets` (mecanismo 3, a mano) -- su
+   `admin-password` debe copiarse también a
+   `KEYCLOAK_ADMIN_PASSWORD` del `.env` de identification-service: son el
+   mismo admin-cli, en dos Secrets distintos.
 
 ## Los tres mecanismos de generación (no son intercambiables)
 
@@ -155,23 +178,31 @@ kubectl create secret generic audit-service-producer-keys \
 
 1. `kubectl apply -f k8s/namespace.yaml`
 2. `ghcr-creds` a mano (ver pre-requisito arriba) — hace falta antes de
-   `migrations-job.yaml` y de `deployments/hsm-service.yaml`
-3. `mysql-secrets` y `hsm-secrets` (mecanismo 3, a mano — ver arriba)
+   `migrations-job.yaml`, `deployments/hsm-service.yaml` y
+   `deployments/keycloak.yaml` (las tres imágenes viven en ghcr.io)
+3. `mysql-secrets`, `hsm-secrets` y `keycloak-secrets` (mecanismo 3, a mano
+   — ver arriba). Para `keycloak-secrets`: el esquema `keycloak` + su
+   usuario ya tienen que existir en la MySQL gestionada antes (ver su
+   comentario de cabecera), y construir/pushear
+   `ghcr.io/digsigna/keycloak:22.0.0-mysql` (ver pre-requisito arriba)
 4. `k8s/jobs/migrations-job.yaml` (depende de `mysql-secrets` y `ghcr-creds`)
 5. `scripts/generate-service-keys.sh` + Secret `audit-service-producer-keys` a mano (mecanismo 2)
 6. `kubectl apply -f k8s/storage/identification-service-jwt-keys-pvc.yaml` (mecanismo 3 -- PVC vacío, sin generación a mano)
 7. `scripts/apply-service-env-secrets.sh` (mecanismo 1, los 7 servicios)
 8. `kubectl apply -f k8s/rbac/hsm-service-rbac.yaml -f k8s/configmaps/ -f k8s/storage/softhsm-pvc.yaml`
-9. `kubectl apply -f k8s/deployments/redis-gateway.yaml -f k8s/deployments/hsm-service.yaml`
-   (`softhsm-standalone.yaml` NO se incluye acá a propósito — ver el flag
-   en ese archivo, confirmar primero si sigue vigente)
+9. `kubectl apply -f k8s/deployments/redis-gateway.yaml -f k8s/deployments/hsm-service.yaml -f k8s/deployments/keycloak.yaml`
 
-Los pasos 8-9 son los únicos con `Deployment` real hoy, y cubren solo
-hsm-service (porque ya existía como manifiesto real migrado) y el Redis de
-apoyo de api-gateway (porque era un gap bloqueante para `/ready`). Los
-otros 6 servicios siguen sin `Deployment`/`Service`/`Ingress` — sus
-Secrets (pasos 1-7) ya están listos para cuando esos manifiestos se
-escriban.
+Los pasos 8-9 son los únicos con `Deployment` real hoy, y cubren
+hsm-service (porque ya existía como manifiesto real migrado), el Redis de
+apoyo de api-gateway (porque era un gap bloqueante para `/ready`) y ahora
+Keycloak (gap bloqueante para que identification-service pueda loguear a
+nadie). Ninguno de los tres depende de los otros dos al arrancar
+(hsm-service depende de identification-service, no de Keycloak
+directamente -- ver el comentario de ordering en
+`k8s/deployments/keycloak.yaml`), así que el orden entre ellos en este
+paso no importa. Los otros 6 servicios siguen sin `Deployment`/`Service`/
+`Ingress` — sus Secrets (pasos 1-7) ya están listos para cuando esos
+manifiestos se escriban.
 
 ## Gaps conocidos, señalados a propósito
 
@@ -261,6 +292,48 @@ hsm-service, vía 6 agentes en paralelo releyendo `docker-compose.dev.yml`
   `cors.allowed_origins` en placeholder) + `GATEWAY_CONFIG_PATH`/
   `GATEWAY_ENVIRONMENT=production` en el Secret de env.
 
+**Resuelto en una ronda posterior:**
+
+- **Keycloak ya tiene Deployment+Service**: `k8s/deployments/keycloak.yaml`
+  (NUEVO), con tres decisiones de diseño que no se podían copiar tal cual
+  de dev — ver el comentario de cabecera de ese archivo para el detalle
+  completo: (1) `start` en vez de `start-dev` (H2 embebido no persistente,
+  inaceptable para prod) contra un esquema MySQL propio
+  (`keycloak-secrets.secret.yaml`); (2) imagen propia
+  (`ghcr.io/digsigna/keycloak:22.0.0-mysql`, `images/keycloak/Dockerfile`)
+  porque la imagen base no trae el driver JDBC de MySQL (licencia GPL);
+  (3) `keycloak-seed` (el parche de dev para el tenant raíz insertado
+  directo en MySQL) NO se migra -- confirmado contra
+  `create-tenant.js`/`bootstrap-platform.js` que el flujo real
+  (`POST /bootstrap`) ya crea el realm como parte del mismo request, sin
+  ningún hueco que parchar después.
+- **`k8s/deployments/softhsm-standalone.yaml` — borrado**: confirmado con
+  el equipo que era solo la prueba funcional manual de SoftHSM al migrarlo
+  desde `softhsm/k8s/`, sin relación con la arquitectura real de
+  hsm-service (que ya corre su propio SoftHSM como sidecar) y sin ningún
+  otro manifiesto de este repo que lo referenciara. Ya no existe en este
+  repo (antes solo estaba flaggeado, no incluido en el orden de
+  aplicación).
+- **"Drift de versión de la imagen `migrations` entre repos" — no era un
+  drift**: era comparar contra el archivo equivocado.
+  `certificate-service/docker-compose.yml`,
+  `signing-service/docker-compose.yml` y
+  `verification-service/docker-compose.yml` (que pinean `1.0.65`) son cada
+  uno un compose "standalone" explícitamente aislado — su propia MySQL
+  descartable, para correr ese servicio solo con `HSM_BACKEND=in_memory`,
+  nunca contra el esquema compartido (ver el comentario de cabecera de
+  cualquiera de los tres). No son la fuente real de ese tag en ningún
+  entorno integrado. `k8s/jobs/migrations-job.yaml` pineando `1.0.75` sí
+  coincide con `hsm-service/docker-compose.dev.yml` (el que gobierna el
+  flujo real de una sola MySQL compartida, con el historial real de bump
+  `1.0.72` → `1.0.73` por la migración `027_rbac_catalog_v1` documentado
+  ahí) — ese es el valor correcto, nada que cambiar. Re-auditado
+  específicamente contra `certificate-service/docker-compose.dev.yml` y
+  `verification-service/docker-compose.dev.yml` (los composes reales, no
+  los standalone) para confirmar que el resto del inventario de
+  `docs/env-vars-inventory.md` para esos dos servicios también viene de
+  ahí y no de ningún compose aislado -- coincide en ambos.
+
 **Sin resolver, señalados a propósito:**
 
 - **PVC de `identification-service-jwt-keys` es `ReadWriteOnce`**: solo un
@@ -277,18 +350,6 @@ hsm-service, vía 6 agentes en paralelo releyendo `docker-compose.dev.yml`
   decidir: ¿Redis dedicado para signing-service/verification-service, o
   reusar `k8s/deployments/redis-gateway.yaml`? No se decidió
   unilateralmente acá.
-- **Keycloak no está en ningún manifiesto de este repo** —
-  identification-service depende de él para que el login funcione
-  (confirmado en `hsm-service/docker-compose.dev.yml`, que es donde vive
-  hoy en dev junto a su script de seed). No hay `Deployment`/`StatefulSet`
-  ni Job equivalente a `keycloak-seed-dev.sh` para k8s.
-- **Drift de versión de la imagen `migrations` entre repos**: varios
-  `docker-compose.yml` (certificate-service, signing-service,
-  verification-service) pinean `1.0.65`, mientras
-  `k8s/jobs/migrations-job.yaml` pinea `1.0.75` (razonado desde
-  `hsm-service/docker-compose.dev.yml`). Probablemente drift esperado
-  entre dev local y k8s, pero no se confirmó con quien mantiene el
-  pipeline de migraciones — no se cambió nada sin esa confirmación.
 - **Campos vestigiales en `hsm-secrets`** (`master-key`, `v1`, y ahora
   también `so-pin`): se preservan en la migración por no poder descartar
   con 100% de certeza que nada los lea fuera de este repo — candidatos a
@@ -300,12 +361,6 @@ hsm-service, vía 6 agentes en paralelo releyendo `docker-compose.dev.yml`
   auto-init que ya no se usa) en la imagen `ghcr.io/digsigna/softhsm/softhsm:1.0.0`.
   No afecta a este Deployment (ya no se invoca ese script), pero es un gap
   real en otro repo que vale la pena señalar al equipo de softhsm.
-- **`k8s/deployments/softhsm-standalone.yaml`**: posible duplicado de
-  testing de la arquitectura real de hsm-service (que ya corre su propio
-  SoftHSM como sidecar) — hardcodea PINs en texto plano y no usa el PVC
-  compartido. Migrado tal cual pero NO incluido en el orden de aplicación —
-  confirmar con el equipo si sigue vigente antes de aplicarlo en algún
-  entorno.
 - **`Deployment`/`Service`/`Ingress` de los otros 6 servicios**
   (identification-service, certificate-service, signing-service,
   verification-service, gateway-service, audit-service): no escritos —

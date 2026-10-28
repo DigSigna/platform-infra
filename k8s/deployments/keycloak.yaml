@@ -1,0 +1,178 @@
+# NUEVO -- Keycloak no vivía en ningún manifiesto de este repo todavía (ver
+# gap señalado en k8s/README.md). En dev vive en
+# hsm-service/docker-compose.dev.yml (no en el de identification-service,
+# que solo lo CONSUME vía KEYCLOAK_BASE_URL) -- mismo criterio acá: este
+# Deployment vive junto a hsm-service en k8s/deployments/, no en ningún
+# manifiesto de identification-service.
+#
+# Tres decisiones de diseño resueltas acá, releyendo
+# hsm-service/docker-compose.dev.yml y el código real de identification-service
+# (no asumido) -- lo que dev hace con `start-dev` NO se puede copiar tal
+# cual a producción:
+#
+#   1. Modo de arranque: `start` (no `start-dev`). `start-dev` corre con
+#      almacenamiento H2 EMBEBIDO no persistente -- cada restart del pod
+#      perdería todos los realms/usuarios. `start` requiere una base real
+#      (KC_DB=mysql acá, ver keycloak-secrets.secret.yaml) y hostname/proxy
+#      config explícitos, que start-dev autoresuelve y start no.
+#   2. Driver de MySQL: la imagen base no lo trae (licencia GPL) -- se usa
+#      una imagen propia (ghcr.io/digsigna/keycloak:22.0.0-mysql) construida
+#      desde images/keycloak/Dockerfile, que le agrega el connector y corre
+#      `kc.sh build --db=mysql`. Ver ese Dockerfile para el detalle.
+#   3. `keycloak-seed` (el Job que en dev corrige el tenant plataforma raíz
+#      insertado directo en MySQL por setup-seed-dev.sh, sin que Keycloak
+#      se enterara) NO se migra acá -- es un parche específico de un
+#      problema que solo existe en dev. En k8s/prod, el tenant raíz se crea
+#      vía el flujo real (POST /bootstrap -> bootstrap-platform.js ->
+#      create-tenant.js), que YA llama
+#      keycloakAdminClient.createRealm()/createPublicClient() como parte
+#      del mismo request -- no hay ningún realm faltante que parchar
+#      después. Confirmado leyendo ambos archivos, no asumido.
+#
+# Dato de ordering (no de Keycloak en sí, pero sale de los mismos composes):
+# identification-service NO depende de Keycloak al arrancar (solo
+# perezosamente, en el primer login/bootstrap/provisión -- ver
+# src/core/health/health-check.js), así que no necesita esperar a que este
+# Deployment esté listo. hsm-service SÍ depende de identification-service al
+# arrancar (loadInitialKeys() hace fetch de JWKS, log.Fatalf sin fallback si
+# falla) -- pero k8s/deployments/hsm-service.yaml ya resuelve esto solo con
+# el restartPolicy default (Always) + sus propias probes, sin necesitar
+# ningún initContainer de espera (CrashLoopBackOff normal mientras
+# identification-service no esté arriba). Nada que cambiar ahí, solo
+# quedó confirmado al revisar este Deployment.
+#
+# Sin PVC: el estado (realms/usuarios/clientes) vive en la base MySQL
+# (keycloak-secrets), no en el filesystem del pod.
+#
+# PRE-REQUISITOS para aplicar esto:
+#   - Esquema "keycloak" + usuario ya creados en la MySQL gestionada (ver
+#     el comentario de cabecera de keycloak-secrets.secret.yaml).
+#   - Secret `keycloak-secrets` aplicado (mecanismo 3, a mano).
+#   - Imagen `ghcr.io/digsigna/keycloak:22.0.0-mysql` construida y
+#     pusheada (ver images/keycloak/Dockerfile) -- por eso necesita
+#     `ghcr-creds` como imagePullSecret, a diferencia de la imagen base
+#     pública en quay.io que usa dev.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: digsigna
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak
+  template:
+    metadata:
+      labels:
+        app: keycloak
+    spec:
+      imagePullSecrets:
+      - name: ghcr-creds
+      containers:
+      - name: keycloak
+        image: ghcr.io/digsigna/keycloak:22.0.0-mysql
+        imagePullPolicy: Always
+        args: ["start"]
+        env:
+        - name: KEYCLOAK_ADMIN
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-secrets
+              key: admin-username
+        - name: KEYCLOAK_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-secrets
+              key: admin-password
+
+        - name: KC_DB
+          value: "mysql"
+        - name: KC_DB_URL
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-secrets
+              key: db-url
+        - name: KC_DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-secrets
+              key: db-username
+        - name: KC_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-secrets
+              key: db-password
+
+        # Nunca sirve una página de login en un browser real -- identification-service
+        # solo habla con /realms/*/protocol/openid-connect/token (resource
+        # owner password grant, descartando la respuesta -- auth-client.js)
+        # y con la Admin REST API (admin-client.js), nunca redirige a nadie
+        # acá. KC_HOSTNAME_STRICT=false evita que un Host header distinto
+        # (DNS interno vs. nombre corto del Service) rompa algo que no
+        # importa en este flujo. Se fija KC_HOSTNAME igual, por claridad y
+        # por si en el futuro se agrega algún flujo que sí redirija un
+        # browser.
+        - name: KC_HOSTNAME
+          value: "keycloak"
+        - name: KC_HOSTNAME_STRICT
+          value: "false"
+        - name: KC_HTTP_ENABLED
+          value: "true"
+        - name: KC_HEALTH_ENABLED
+          value: "true"
+
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+
+        # httpGet lo ejecuta el kubelet desde afuera del contenedor -- a
+        # diferencia del healthcheck de Docker Compose en dev (CMD-based,
+        # necesitaba el truco de /dev/tcp porque la imagen ubi-micro no
+        # trae curl/wget), no depende de ningún binario dentro de la imagen.
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+            ephemeral-storage: "256Mi"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+            ephemeral-storage: "512Mi"
+---
+# Nombre "keycloak" a propósito -- coincide con KEYCLOAK_BASE_URL=http://keycloak:8080
+# que k8s/envs/identification-service.env.example YA tiene fijado (ver
+# docs/env-vars-inventory.md), así que no hace falta traducir nada ahí.
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: digsigna
+spec:
+  selector:
+    app: keycloak
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
