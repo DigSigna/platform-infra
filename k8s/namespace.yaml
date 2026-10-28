@@ -1,0 +1,8 @@
+# Namespace donde viven todos los recursos de este repo. Nada lo creaba
+# todavía -- todos los manifiestos existentes (k8s/service-keys/*, scripts/
+# generate-service-keys.sh) ya asumían namespace: digsigna sin que nada lo
+# declarara.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: digsigna

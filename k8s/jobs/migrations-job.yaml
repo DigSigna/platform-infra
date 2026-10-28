@@ -1,0 +1,33 @@
+# Migrado desde softhsm/k8s/migrations-job.yaml. La versión original tenía
+# el DSN completo de la MySQL gestionada hardcodeado en texto plano,
+# incluyendo el password real -- ya expuesto en el historial de git del
+# repo softhsm (commit e9a16b8, pusheado a GitHub). Esta versión lee el DSN
+# desde el Secret `mysql-secrets` (ver shared-secrets/mysql-secrets.secret.yaml),
+# nunca un valor literal en este archivo.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrations-job
+  namespace: digsigna
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      imagePullSecrets:
+      - name: ghcr-creds
+      restartPolicy: Never
+      containers:
+      - name: migrate
+        image: ghcr.io/digsigna/migrations:latest
+        imagePullPolicy: Always
+        env:
+        - name: MYSQL_DSN
+          valueFrom:
+            secretKeyRef:
+              name: mysql-secrets
+              key: connection_string
+        command: [ "sh", "-c" ]
+        args:
+        - |
+          echo "Running database migrations..."
+          migrate -path=/migrations -database "$MYSQL_DSN" up

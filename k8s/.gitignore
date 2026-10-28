@@ -1,0 +1,3 @@
+# Valores reales -- análogo a terraform.tfvars en terraform/. Los .example
+# sí se commitean.
+envs/*.env

@@ -29,15 +29,18 @@ NAMESPACE="${NAMESPACE:-digsigna}"
 # verification-service usa el mismo wiring de py-common/audit hybrid que
 # certificate-service y signing-service -- AUDIT_ENABLED/AUDIT_STRATEGY en su
 # config.py y docker-compose.dev.yml -- así que es un productor real aunque
-# el plan original no lo mencionara). NO incluye audit-service (es quien
-# valida, no quien produce) ni api-gateway (todavía no existe como servicio)
-# -- agregar una línea acá cuando api-gateway exista de verdad, no antes.
+# el plan original no lo mencionara). api-gateway (repo gateway-service) se
+# agregó después de confirmar, leyendo su código real, que ya envía
+# X-Service-API-Key a audit-service -- el plan original decía "todavía no
+# existe", quedó desactualizado (ver docs/env-vars-inventory.md). NO incluye
+# audit-service: es quien valida estas keys, no quien las produce.
 declare -A SERVICE_SECRETS=(
   [hsm-service]="hsm-service-audit-key"
   [certificate-service]="certificate-service-audit-key"
   [signing-service]="signing-service-audit-key"
   [identification-service]="identification-service-audit-key"
   [verification-service]="verification-service-audit-key"
+  [gateway-service]="gateway-service-audit-key"
 )
 
 require_cmd() {
