@@ -1,0 +1,39 @@
+# Migrado desde softhsm/k8s/hsm-service-rbac.yaml. Sin cambios de fondo --
+# solo se agregó namespace: digsigna explícito (el original asumía el
+# namespace por defecto del contexto de kubectl, nunca declarado).
+#
+# Restringe el ServiceAccount de hsm-service a leer, por nombre exacto,
+# únicamente los Secrets `hsm-secrets` y `mysql-secrets` -- ver la nota en
+# k8s/shared-secrets/hsm-secrets.secret.yaml y mysql-secrets.secret.yaml:
+# renombrar cualquiera de esos dos Secrets rompe este RBAC si no se
+# actualiza acá también.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hsm-service
+  namespace: digsigna
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hsm-service-secrets-reader
+  namespace: digsigna
+rules:
+- apiGroups: [ "" ]
+  resources: [ "secrets" ]
+  resourceNames: [ "hsm-secrets", "mysql-secrets" ]
+  verbs: [ "get", "watch" ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hsm-service-secrets-reader
+  namespace: digsigna
+subjects:
+- kind: ServiceAccount
+  name: hsm-service
+  namespace: digsigna
+roleRef:
+  kind: Role
+  name: hsm-service-secrets-reader
+  apiGroup: rbac.authorization.k8s.io

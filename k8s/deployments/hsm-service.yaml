@@ -1,0 +1,237 @@
+# Reemplaza la versión migrada de softhsm/k8s/hsm-sidecar-deployment.yaml --
+# esa versión tenía varios desfaces de información reales confirmados
+# leyendo hsm-service/docker-compose.dev.yml,
+# hsm-service/internal/infrastructure/config/{app_config,config_types}.go,
+# y hsm-service/internal/application/services/slot_service.go (no asumido):
+#
+#   1. SIN initContainer de auto-init de token: la arquitectura real ya NO
+#      crea ningún slot/token al arrancar el contenedor. Cada tenant
+#      (incluido el root) provisiona su propio slot vía
+#      POST /internal/hsm/slots/initialize (slot_service.go) -- confirmado
+#      también en hsm-service/config/init-token-if-empty.sh (el script que
+#      SÍ está vigente, montado en el compose de dev), que hoy es un no-op:
+#      "Auto token initialization disabled -- slots are provisioned
+#      per-tenant via POST /internal/hsm/slots/initialize." El initContainer
+#      que había acá corría la versión VIEJA de ese script (todavía baked
+#      en la imagen ghcr.io/digsigna/softhsm/softhsm:1.0.0 porque
+#      softhsm/Dockerfile en el repo softhsm copia softhsm/k8s/init-token-if-empty.sh,
+#      que nunca se actualizó para reflejar el cambio de arquitectura -- ese
+#      es un gap del repo softhsm, no de este, pero significa que esa
+#      imagen en particular NO debe invocarse esperando que inicialice nada).
+#   2. SO_PIN/so-pin: sin ningún consumidor real -- slot_service.go llama
+#      InitToken usando solo el PIN normal (s.config.Pin), nunca un SO-PIN
+#      separado. Ver nota actualizada en
+#      k8s/shared-secrets/hsm-secrets.secret.yaml.
+#   3. HSM_AUTH_MODE="production" (no "development") y HSM_AUTH_JWKS_URL
+#      apunta a identification-service (no a localhost:8080) -- confirmado
+#      en docker-compose.dev.yml, que corre HSM_AUTH_MODE=production incluso
+#      en dev. HSM_AUTH_PUBLIC_KEY_PATH y el volumen de auth-public-key se
+#      sacaron: docker-compose.dev.yml no los setea en absoluto con modo
+#      production -- el flujo real es JWKS únicamente.
+#   4. DATABASE_ENABLED: sacado -- no es un campo real de DatabaseConfig ni
+#      está bindeado a ningún env var en app_config.go, dead config.
+#   5. HSM_CONFIG_PATH agregado + el ConfigMap ahora se monta en una ruta
+#      absoluta (/etc/hsm-service/config.yaml) en vez de /root/config/config.yaml.
+#      app_config.go's propio comentario documenta el incidente real: sin
+#      HSM_CONFIG_PATH, LoadConfig() busca "config/config.<env>.yaml"
+#      relativo al CWD del proceso (/app, por el WORKDIR del Dockerfile) --
+#      el Dockerfile de runtime NO copia el directorio config/ a la imagen,
+#      así que sin esta variable el proceso no encuentra ningún archivo de
+#      config al arrancar. El comentario del propio repo dice que esto "ya
+#      rompió la resolución real en el deployment de k8s" una vez.
+#   6. AUDIT_API_KEY agregado -- faltaba por completo en la versión migrada.
+#      Sin esto, hsm-service no puede autenticarse contra audit-service
+#      (X-Service-API-Key) y su estrategia de auditoría "hybrid" fallaría
+#      ese lado HTTP. Lee la key de k8s/service-keys/hsm-service.secret.yaml
+#      (Secret hsm-service-audit-key, generado por
+#      scripts/generate-service-keys.sh).
+#
+# PRE-REQUISITOS para aplicar esto (sin cambios respecto a antes):
+#   - imagePullSecrets "ghcr-creds": ver pre-requisito en k8s/README.md.
+#   - RBAC (k8s/rbac/hsm-service-rbac.yaml) y las ConfigMaps
+#     (k8s/configmaps/) deben aplicarse antes que este Deployment.
+#   - Secret hsm-service-audit-key (k8s/service-keys/, vía
+#     scripts/generate-service-keys.sh) debe existir antes.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hsm-service
+  namespace: digsigna
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hsm-service
+  template:
+    metadata:
+      labels:
+        app: hsm-service
+    spec:
+      serviceAccountName: hsm-service
+      imagePullSecrets:
+      - name: ghcr-creds
+      securityContext:
+        fsGroup: 1000
+
+      volumes:
+      - name: hsm-tokens
+        persistentVolumeClaim:
+          claimName: softhsm-pvc
+
+      - name: softhsm-config
+        configMap:
+          name: softhsm-config
+
+      - name: hsm-service-config
+        configMap:
+          name: hsm-service-config
+
+      containers:
+      # -------------------------------------------------
+      # MAIN APP (Go)
+      # -------------------------------------------------
+      - name: hsm-service
+        image: ghcr.io/digsigna/hsm-service:1.0.9
+        imagePullPolicy: Always
+        env:
+        - name: HSM_CONFIG_PATH
+          value: "/etc/hsm-service/config.yaml"
+
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: mysql-secrets
+              key: connection_string
+
+        - name: HSM_ENVIRONMENT
+          value: "production"
+
+        - name: HSM_LIBRARY_PATH
+          value: "/usr/lib/softhsm/libsofthsm2.so"
+
+        - name: HSM_TOKEN_LABEL
+          value: "digsigna-token"
+
+        - name: HSM_PIN
+          valueFrom:
+            secretKeyRef:
+              name: hsm-secrets
+              key: pin
+
+        - name: HSM_AUTH_MODE
+          value: "production"
+        - name: HSM_AUTH_JWKS_URL
+          value: "http://identification-service:3000/.well-known/jwks.json"
+        - name: HSM_AUTH_JWKS_CACHE_MINUTES
+          value: "60"
+
+        - name: HSM_AESKEYMANAGER_STRATEGY
+          value: "k8s"
+        - name: HSM_AESKEYMANAGER_K8S_SECRET_NAME
+          value: "hsm-secrets"
+        - name: HSM_AESKEYMANAGER_K8S_SECRET_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: HSM_AESKEYMANAGER_K8S_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: hsm-secrets
+              key: master-key-id
+        - name: HSM_AESKEYMANAGER_K8S_MASTER_KEY_KEY
+          value: "master-aes-key-v1"
+        - name: HSM_AESKEYMANAGER_K8S_OLD_MASTER_KEY_KEY
+          value: "master-key-old"
+        - name: HSM_AESKEYMANAGER_K8S_IN_CLUSTER
+          value: "true"
+        - name: HSM_AESKEYMANAGER_K8S_KUBECONFIG_PATH
+          value: ""
+
+        - name: HSM_AUDIT_ENABLED
+          value: "true"
+        - name: HSM_AUDIT_STRATEGY
+          value: "hybrid"
+        - name: HSM_AUDIT_HTTP_TIMEOUT
+          value: "5s"
+        - name: HSM_AUDIT_HYBRID_CIRCUIT_BREAKER_MAX_FAILURES
+          value: "5"
+        - name: HSM_AUDIT_HYBRID_CIRCUIT_BREAKER_RESET_TIMEOUT
+          value: "30s"
+        - name: AUDIT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: hsm-service-audit-key
+              key: api_key
+
+        volumeMounts:
+        - name: hsm-tokens
+          mountPath: /var/lib/softhsm/tokens
+        - name: softhsm-config
+          mountPath: /etc/softhsm2.conf
+          subPath: softhsm2.conf
+        - name: hsm-service-config
+          mountPath: /etc/hsm-service/config.yaml
+          subPath: config.yaml
+
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+            ephemeral-storage: "256Mi"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+            ephemeral-storage: "512Mi"
+
+      # -------------------------------------------------
+      # SIDECAR (espera y nada más -- SoftHSM en sí, sin auto-init)
+      # -------------------------------------------------
+      - name: softhsm-sidecar
+        image: ghcr.io/digsigna/softhsm/softhsm:1.0.0
+        imagePullPolicy: Always
+        securityContext:
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: hsm-tokens
+          mountPath: /var/lib/softhsm/tokens
+        - name: softhsm-config
+          mountPath: /etc/softhsm2.conf
+          subPath: softhsm2.conf
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+            ephemeral-storage: "128Mi"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+            ephemeral-storage: "256Mi"

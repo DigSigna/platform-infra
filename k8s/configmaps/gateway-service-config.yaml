@@ -1,0 +1,71 @@
+# Copia fiel de gateway-service/config/config.production.yaml (el propio
+# repo lo documenta como "version-controlled, NO secrets" -- mismo patrón
+# que k8s/configmaps/hsm-service-config.yaml). Resuelve un gap real: el
+# Dockerfile de runtime de gateway-service (etapa final) solo copia el
+# binario compilado, nunca el directorio config/ -- confirmado en
+# gateway-service/Dockerfile. Sin esto más GATEWAY_CONFIG_PATH apuntando
+# acá, el proceso no encuentra ningún archivo de config al arrancar (mismo
+# incidente que ya se documentó para hsm-service).
+#
+# cors.allowed_origins queda en placeholder -- el propio archivo real dice
+# "REQUIRED: the real frontend origin(s), set via deployment config, not
+# hardcoded here" y ese dominio real todavía no existe (mismo estado
+# "template" que terraform/, no hay nada desplegado en DO todavía).
+# Completar con el dominio real del frontend antes de aplicar esto en
+# cualquier entorno que importe.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-service-config
+  namespace: digsigna
+data:
+  config.yaml: |
+    environment: production
+
+    server:
+      address: ":8080"
+
+    auth:
+      mode: "production"
+      public_key_path: ""
+      jwks_url: "" # se fija vía GATEWAY_AUTH_JWKS_URL env var
+      jwks_cache_minutes: 60
+
+    routes:
+      services:
+        identification: "http://identification-service:3000"
+        hsm: "http://hsm-service:8080"
+        certificate: "http://certificate-service:8000"
+        signing: "http://signing-service:8001"
+        verification: "http://verification-service:8002"
+        audit: "http://audit-service:8080"
+      spec_paths:
+        hsm: "/swagger/doc.json"
+        audit: "/swagger/doc.json"
+      health_paths:
+        identification: "/api/v1/health"
+        certificate: "/api/v1/health"
+        signing: "/api/v1/health"
+        verification: "/api/v1/health"
+      public_paths:
+        - "/verification/api/v1/verify"
+        - "/identification/api/v1/tenants/:tenantId/sessions"
+        - "/identification/api/v1/auth/refresh"
+        - "/identification/api/v1/auth/logout"
+        - "/identification/api/v1/bootstrap"
+
+    ratelimit:
+      window_seconds: 900
+      max: 100
+
+    redis:
+      address: "" # se fija vía GATEWAY_REDIS_ADDRESS env var
+
+    cors:
+      allowed_origins: []  # PLACEHOLDER -- completar con el dominio real del frontend, ver nota arriba
+      public_paths:
+        - "/verification/api/v1/verify"
+
+    audit:
+      enabled: true
+      http_base_url: "http://audit-service:8080"

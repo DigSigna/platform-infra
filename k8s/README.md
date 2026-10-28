@@ -15,36 +15,69 @@ directamente del código real de los 7 repos (no asumido). Léanlo antes de
 tocar cualquier valor real.
 
 **Fuera de alcance de este directorio, a propósito**: no hay ningún
-`Deployment`/`Service`/`Ingress` todavía para ninguno de los 7 servicios —
-esta ronda de trabajo cubrió solo el inventario de variables/secrets y su
-mecanismo de carga (tareas 1-3 de `docs/plan.md`... ver el historial de
-`docs/` de este repo). Tampoco hay un Redis desplegado (api-gateway ya lo
-necesita de verdad para `/ready`, ver más abajo) ni manifiestos de RBAC —
-eso sigue en `softhsm/k8s/` sin migrar (solo se migraron `hsm-secrets.yaml`
-y `migrations-job.yaml`, que era el alcance de la tarea 2).
+`Deployment`/`Service`/`Ingress` todavía para los 6 servicios de aplicación
+(identification-service, certificate-service, signing-service,
+verification-service, gateway-service, audit-service) — esta ronda de
+trabajo cubrió el inventario de variables/secrets, su mecanismo de carga, y
+(ronda siguiente) hsm-service + su Redis de apoyo, que ya existían como
+manifiestos reales en `softhsm/k8s/` o eran un gap bloqueante confirmado.
+Los otros 6 siguen sin Deployment: no había ningún manifiesto previo de
+referencia para ellos, a diferencia de hsm-service.
 
 ```
 k8s/
   namespace.yaml              # namespace "digsigna", nada lo creaba todavía
+  rbac/
+    hsm-service-rbac.yaml       # migrado de softhsm/k8s/ -- ServiceAccount+Role+RoleBinding
+  configmaps/
+    hsm-service-config.yaml     # migrado de softhsm/k8s/ -- config.yaml de hsm-service
+    softhsm-config.yaml         # migrado de softhsm/k8s/softhsm-configmap.yaml
+    auth-public-key-configmap.yaml  # migrado de softhsm/k8s/ -- clave pública, SIN consumidor real hoy (auth es solo JWKS)
+    gateway-service-config.yaml  # NUEVO -- copia fiel de gateway-service/config/config.production.yaml, resuelve el mismo gap de ruta de config que hsm-service tenía
+  storage/
+    softhsm-pvc.yaml             # migrado de softhsm/k8s/ -- tokens de SoftHSM
+    identification-service-jwt-keys-pvc.yaml  # NUEVO -- reemplaza el Secret de JWT, ver nota abajo
+  deployments/
+    hsm-service.yaml             # migrado y corregido contra docker-compose.dev.yml/código real -- sin initContainer de auto-init, auth vía JWKS production
+    softhsm-standalone.yaml       # migrado de softhsm/k8s/ -- FLAG: posible duplicado sin uso, ver el archivo
+    redis-gateway.yaml            # NUEVO -- Redis real para /ready de api-gateway (Service "redis")
   shared-secrets/             # Secrets compartidos entre varios servicios
     mysql-secrets.secret.yaml   # DSN de la MySQL gestionada (migrado de softhsm/k8s/)
     hsm-secrets.secret.yaml     # PIN/SO-PIN/master keys de SoftHSM (migrado de softhsm/k8s/)
   jobs/
-    migrations-job.yaml         # migrado de softhsm/k8s/ -- ya no hardcodea el DSN
+    migrations-job.yaml         # migrado de softhsm/k8s/ -- ya no hardcodea el DSN, y corregido contra el ENTRYPOINT real de la imagen
   manifests/                   # un Secret por servicio con SU config/secrets propios
-    identification-service.secret.yaml
-    identification-service-jwt-keys.secret.yaml  # par RSA de firma JWT (aparte, se monta como volumen)
+    identification-service.secret.yaml  # incluye JWT_SIGNING_KEYS_DIR -- ver storage/identification-service-jwt-keys-pvc.yaml
     hsm-service.secret.yaml
-    certificate-service.secret.yaml
-    signing-service.secret.yaml
+    certificate-service.secret.yaml   # incluye AUTH_ISSUER/AUTH_AUDIENCE
+    signing-service.secret.yaml       # incluye REDIS_* -- ver gap abajo
     verification-service.secret.yaml
-    gateway-service.secret.yaml
+    gateway-service.secret.yaml   # GATEWAY_REDIS_ADDRESS=redis:6379, GATEWAY_CONFIG_PATH -- ver configmaps/gateway-service-config.yaml
     audit-service.secret.yaml
   service-keys/                # YA EXISTÍA: mecanismo de auth productor->audit-service
     <servicio>.secret.yaml       # una api_key por productor (incluye ahora gateway-service)
     audit-service.secret.yaml    # el lado receptor: las 6 AUDIT_KEY_<SERVICIO> juntas
   envs/                        # valores reales -- GITIGNORED salvo los .example
     <servicio>.env.example
+```
+
+## Pre-requisito nuevo, encontrado al migrar: `ghcr-creds`
+
+`k8s/jobs/migrations-job.yaml` y ahora `k8s/deployments/hsm-service.yaml`
+referencian `imagePullSecrets: [{name: ghcr-creds}]` — ningún Secret con
+ese nombre existe en este repo ni estaba documentado (se migró el Job sin
+notarlo en la ronda anterior). Es un `docker-registry` Secret, no un
+`Opaque` de `KEY=VALUE`, así que no tiene una forma de "shape sin valores"
+útil para commitear — se crea a mano, igual criterio operativo que
+`mysql-secrets`/`hsm-secrets`:
+
+```sh
+kubectl create secret docker-registry ghcr-creds \
+  --docker-server=ghcr.io \
+  --docker-username=<usuario-github> \
+  --docker-password=<PAT-con-scope-read:packages> \
+  --docker-email=<email> \
+  -n digsigna
 ```
 
 ## Los tres mecanismos de generación (no son intercambiables)
@@ -110,37 +143,171 @@ kubectl create secret generic audit-service-producer-keys \
   mano con `kubectl create secret generic hsm-secrets --from-literal=...`
   siguiendo los campos de `k8s/shared-secrets/hsm-secrets.secret.yaml`.
 
-- `identification-service-jwt-keys` (par RSA de firma JWT):
-
-  ```sh
-  scripts/generate-identification-jwt-keys.sh
-  ```
+- `identification-service-jwt-keys`: YA NO es un Secret generado por
+  script — ver `k8s/storage/identification-service-jwt-keys-pvc.yaml`.
+  Es un PVC vacío; el propio proceso de identification-service genera y
+  persiste su par RSA ahí solo, la primera vez que arranca sin nada
+  persistido (`loadOrGenerateKeyPair()` en `signer.js`). Solo hace falta
+  `kubectl apply -f k8s/storage/identification-service-jwt-keys-pvc.yaml`
+  antes de desplegar el servicio -- nada que generar a mano.
 
 ## Orden para aplicar todo desde cero
 
 1. `kubectl apply -f k8s/namespace.yaml`
-2. `mysql-secrets` y `hsm-secrets` (mecanismo 3, a mano — ver arriba)
-3. `k8s/jobs/migrations-job.yaml` (depende de `mysql-secrets`)
-4. `scripts/generate-service-keys.sh` + Secret `audit-service-producer-keys` a mano (mecanismo 2)
-5. `scripts/generate-identification-jwt-keys.sh` (mecanismo 3)
-6. `scripts/apply-service-env-secrets.sh` (mecanismo 1, los 7 servicios)
+2. `ghcr-creds` a mano (ver pre-requisito arriba) — hace falta antes de
+   `migrations-job.yaml` y de `deployments/hsm-service.yaml`
+3. `mysql-secrets` y `hsm-secrets` (mecanismo 3, a mano — ver arriba)
+4. `k8s/jobs/migrations-job.yaml` (depende de `mysql-secrets` y `ghcr-creds`)
+5. `scripts/generate-service-keys.sh` + Secret `audit-service-producer-keys` a mano (mecanismo 2)
+6. `kubectl apply -f k8s/storage/identification-service-jwt-keys-pvc.yaml` (mecanismo 3 -- PVC vacío, sin generación a mano)
+7. `scripts/apply-service-env-secrets.sh` (mecanismo 1, los 7 servicios)
+8. `kubectl apply -f k8s/rbac/hsm-service-rbac.yaml -f k8s/configmaps/ -f k8s/storage/softhsm-pvc.yaml`
+9. `kubectl apply -f k8s/deployments/redis-gateway.yaml -f k8s/deployments/hsm-service.yaml`
+   (`softhsm-standalone.yaml` NO se incluye acá a propósito — ver el flag
+   en ese archivo, confirmar primero si sigue vigente)
 
-Ningún paso de arriba incluye desplegar los servicios en sí (no hay
-`Deployment` todavía) — esto deja los Secrets listos para cuando esos
-manifiestos se escriban.
+Los pasos 8-9 son los únicos con `Deployment` real hoy, y cubren solo
+hsm-service (porque ya existía como manifiesto real migrado) y el Redis de
+apoyo de api-gateway (porque era un gap bloqueante para `/ready`). Los
+otros 6 servicios siguen sin `Deployment`/`Service`/`Ingress` — sus
+Secrets (pasos 1-7) ya están listos para cuando esos manifiestos se
+escriban.
 
-## Gaps conocidos, señalados a propósito (no resueltos en esta ronda)
+## Gaps conocidos, señalados a propósito
 
-- **Redis para api-gateway**: `GATEWAY_REDIS_ADDRESS` queda vacía en
-  `k8s/envs/gateway-service.env.example` porque no hay Redis desplegado
-  todavía. Sin esto, `/ready` de api-gateway pasa el check de Redis
-  trivialmente (cae a rate-limit en memoria) — no es un estado seguro para
-  producción multi-réplica, ver `docs/env-vars-inventory.md`.
-- **Campos vestigiales en `hsm-secrets`** (`master-key`, `v1`): se
-  preservaron en la migración por no poder confirmar con certeza que nada
-  los lee — candidatos a limpieza en una pasada futura.
-- **RBAC/Deployments/ConfigMaps de hsm-service** (`hsm-service-rbac.yaml`,
-  `hsm-sidecar-deployment.yaml`, `hsm-service-config.yaml`,
-  `softhsm-*.yaml`, `auth-public-key-configmap.yaml`) siguen en
-  `softhsm/k8s/` sin migrar — la tarea 2 solo pedía migrar
-  `hsm-secrets.yaml` y `migrations-job.yaml`.
+**Resueltos en esta ronda:**
+
+- **Redis para api-gateway**: resuelto, ver `k8s/deployments/redis-gateway.yaml`
+  y `GATEWAY_REDIS_ADDRESS=redis:6379` en `k8s/envs/gateway-service.env.example`.
+- **RBAC/Deployments/ConfigMaps de hsm-service**: migrados de
+  `softhsm/k8s/` a `k8s/rbac/`, `k8s/configmaps/`, `k8s/storage/` y
+  `k8s/deployments/` (ver árbol arriba). Los archivos originales siguen
+  además en `softhsm/k8s/` sin tocar — es otro repo, no se borró nada ahí.
+- **Desface de información corregido** (ver también los comentarios de
+  cabecera de `k8s/deployments/hsm-service.yaml` y
+  `k8s/shared-secrets/hsm-secrets.secret.yaml`): la primera migración de
+  hsm-service se basó en `softhsm/k8s/`, que quedó congelado en un estado
+  anterior de la arquitectura real. Releyendo
+  `hsm-service/docker-compose.dev.yml` y el código real (no asumido) se
+  corrigió:
+  - Se quitó el `initContainer` que auto-inicializaba un token al
+    arrancar — la arquitectura real ya no hace esto, cada tenant
+    (incluido root) provisiona su propio slot vía
+    `POST /internal/hsm/slots/initialize`.
+  - `so-pin` pasó de "confirmado en uso" a vestigial — no hay ningún
+    SO-PIN en el código Go de hsm-service, solo lo usaba el script viejo
+    que el initContainer ya no corre.
+  - `HSM_AUTH_MODE` → `"production"` (no `"development"`) y
+    `HSM_AUTH_JWKS_URL` → `identification-service` (no `localhost`) —
+    confirmado que el dev-compose real ya corre en modo production.
+  - Se sacó `HSM_AUTH_PUBLIC_KEY_PATH` y el volumen de
+    `auth-public-key-configmap.yaml` del Deployment — sin consumidor real
+    con auth vía JWKS.
+  - Se sacó `DATABASE_ENABLED` — no es un campo real, dead config.
+  - Se agregó `HSM_CONFIG_PATH` (y se corrigió la ruta de montaje del
+    ConfigMap) — sin esto, el proceso no encuentra ningún archivo de
+    config al arrancar (incidente real, documentado en el propio código
+    de hsm-service).
+  - Se agregó `AUDIT_API_KEY` (faltaba por completo) — sin esto
+    hsm-service no puede autenticarse contra audit-service.
+  - El ConfigMap `hsm-service-config.yaml` ahora es una copia fiel de
+    `hsm-service/config/config.production.yaml` en vez de una versión
+    reconstruida a mano con nombres de campo y valores desactualizados
+    (`master_key_key`, `max_sessions`, PIN de dev commiteado, etc.)
+  - `k8s/jobs/migrations-job.yaml` invocaba la imagen mal -- leía una
+    variable (`MYSQL_DSN`) que `migrations/scripts/migrate.sh` (el
+    `ENTRYPOINT` real de `ghcr.io/digsigna/migrations`) nunca lee, espera
+    `DATABASE_URL`. Confirmado contra `hsm-service/docker-compose.dev.yml`
+    (que usa `DATABASE_URL` + `command: up`) y corregido para no
+    sobreescribir el `ENTRYPOINT`. También se pineó el tag (`:latest` →
+    `1.0.75`, mismo tag que usa dev) por la misma razón que ya está
+    documentada en ese docker-compose (Docker no re-pulea `:latest`
+    automáticamente, ya causó un incidente real).
+
+**Sobre "el slot del tenant root" (contexto, no un gap en sí)**: el repo
+`migrations` tiene `scripts/setup-hsm-slot-seed.sh`, que asigna el tenant
+más antiguo (el tenant plataforma raíz que siembra `setup-seed-dev.sh`) a
+un slot de HSM -- pero solo escribe filas en MySQL (`hsm_slots`,
+`aes_key_metadata`, `tenants.hsm_slot_id`), nunca toca SoftHSM/PKCS#11
+directamente. Es un script interactivo aparte (pide confirmación explícita
+en producción), no algo para automatizar en un Job sin que se pida --
+no se wireó a ningún manifiesto de este repo a propósito.
+
+**Resueltos tras auditar los 6 repos restantes** (certificate-service,
+signing-service, verification-service, identification-service,
+gateway-service, audit-service — mismo ejercicio que destapó el bug de
+hsm-service, vía 6 agentes en paralelo releyendo `docker-compose.dev.yml`
++ código real de cada uno):
+
+- **identification-service: el plan de JWT mataba la rotación real** (el
+  mismo tipo de bug que hsm-service). `src/infrastructure/jwt/signer.js`
+  tiene dos modos excluyentes: con `JWT_PRIVATE_KEY_PATH` seteada,
+  `rotate()` tira error explícito ("not supported when
+  JWT_PRIVATE_KEY_PATH is set"); sin ella pero con `JWT_SIGNING_KEYS_DIR`,
+  el proceso genera y persiste su propio par, con rotación real (múltiples
+  llaves activas por kid). El plan anterior (Secret +
+  `JWT_PRIVATE_KEY_PATH`/`JWT_PUBLIC_KEY_PATH`) activaba el modo SIN
+  rotación. Reemplazado: `k8s/storage/identification-service-jwt-keys-pvc.yaml`
+  (PVC vacío, escribible) + `JWT_SIGNING_KEYS_DIR` en el Secret de env —
+  el proceso se auto-provisiona la primera vez, sin script.
+- **certificate-service: faltaban `AUTH_ISSUER`/`AUTH_AUDIENCE`** — sin
+  ellas, `JWTValidatorAdapter` (py-common) valida cualquier issuer/
+  audience, más laxo que en dev. Agregadas a
+  `k8s/manifests/certificate-service.secret.yaml` y al `.env.example`.
+- **gateway-service: mismo gap de `*_CONFIG_PATH` que hsm-service** — el
+  Dockerfile de runtime no copia `config/` a la imagen. Agregado
+  `k8s/configmaps/gateway-service-config.yaml` (copia fiel de
+  `gateway-service/config/config.production.yaml`, con
+  `cors.allowed_origins` en placeholder) + `GATEWAY_CONFIG_PATH`/
+  `GATEWAY_ENVIRONMENT=production` en el Secret de env.
+
+**Sin resolver, señalados a propósito:**
+
+- **PVC de `identification-service-jwt-keys` es `ReadWriteOnce`**: solo un
+  pod puede montarlo a la vez — si identification-service necesita más de
+  una réplica, esto es un cuello de botella real (no resuelto; depende de
+  si `do-block-storage` en DOKS soporta `ReadWriteMany`, que normalmente
+  no soporta para volúmenes de bloque).
+- **signing-service: `REDIS_*` no estaba en el inventario ni en los
+  manifiestos** (solo se había señalado para verification-service). `GET
+  /health` llama `check_redis()` sin depender de
+  `AUTH_TOKEN_CACHE_ENABLED` — sin Redis real, el pod siempre reporta
+  `status: "degraded"`. Se agregaron los campos a
+  `k8s/manifests/signing-service.secret.yaml`/`.env.example`, pero falta
+  decidir: ¿Redis dedicado para signing-service/verification-service, o
+  reusar `k8s/deployments/redis-gateway.yaml`? No se decidió
+  unilateralmente acá.
+- **Keycloak no está en ningún manifiesto de este repo** —
+  identification-service depende de él para que el login funcione
+  (confirmado en `hsm-service/docker-compose.dev.yml`, que es donde vive
+  hoy en dev junto a su script de seed). No hay `Deployment`/`StatefulSet`
+  ni Job equivalente a `keycloak-seed-dev.sh` para k8s.
+- **Drift de versión de la imagen `migrations` entre repos**: varios
+  `docker-compose.yml` (certificate-service, signing-service,
+  verification-service) pinean `1.0.65`, mientras
+  `k8s/jobs/migrations-job.yaml` pinea `1.0.75` (razonado desde
+  `hsm-service/docker-compose.dev.yml`). Probablemente drift esperado
+  entre dev local y k8s, pero no se confirmó con quien mantiene el
+  pipeline de migraciones — no se cambió nada sin esa confirmación.
+- **Campos vestigiales en `hsm-secrets`** (`master-key`, `v1`, y ahora
+  también `so-pin`): se preservan en la migración por no poder descartar
+  con 100% de certeza que nada los lea fuera de este repo — candidatos a
+  limpieza en una pasada futura.
+- **`ghcr-creds`** (pull secret de GHCR): pre-requisito nuevo encontrado al
+  migrar, ver sección arriba — se crea a mano, no hay script.
+- **`softhsm/Dockerfile` (repo softhsm) sigue empaquetando el script
+  viejo** (`softhsm/k8s/init-token-if-empty.sh`, con la lógica de
+  auto-init que ya no se usa) en la imagen `ghcr.io/digsigna/softhsm/softhsm:1.0.0`.
+  No afecta a este Deployment (ya no se invoca ese script), pero es un gap
+  real en otro repo que vale la pena señalar al equipo de softhsm.
+- **`k8s/deployments/softhsm-standalone.yaml`**: posible duplicado de
+  testing de la arquitectura real de hsm-service (que ya corre su propio
+  SoftHSM como sidecar) — hardcodea PINs en texto plano y no usa el PVC
+  compartido. Migrado tal cual pero NO incluido en el orden de aplicación —
+  confirmar con el equipo si sigue vigente antes de aplicarlo en algún
+  entorno.
+- **`Deployment`/`Service`/`Ingress` de los otros 6 servicios**
+  (identification-service, certificate-service, signing-service,
+  verification-service, gateway-service, audit-service): no escritos —
+  no había manifiesto de referencia previo para ellos como sí había para
+  hsm-service en `softhsm/k8s/`.

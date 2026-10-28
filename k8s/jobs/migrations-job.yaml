@@ -1,9 +1,29 @@
-# Migrado desde softhsm/k8s/migrations-job.yaml. La versión original tenía
-# el DSN completo de la MySQL gestionada hardcodeado en texto plano,
-# incluyendo el password real -- ya expuesto en el historial de git del
-# repo softhsm (commit e9a16b8, pusheado a GitHub). Esta versión lee el DSN
-# desde el Secret `mysql-secrets` (ver shared-secrets/mysql-secrets.secret.yaml),
-# nunca un valor literal en este archivo.
+# Migrado desde softhsm/k8s/migrations-job.yaml, y luego corregido contra
+# el repo real de migrations (Dockerfile + scripts/migrate.sh) y contra
+# hsm-service/docker-compose.dev.yml -- desface de información encontrado
+# al releer ambos (no asumido):
+#
+#   1. DSN hardcodeado -- ya corregido antes: el original tenía el password
+#      real en texto plano, expuesto en el historial de git del repo
+#      softhsm (commit e9a16b8, pusheado a GitHub). Esta versión lee el DSN
+#      desde el Secret `mysql-secrets`.
+#   2. Variable de entorno y comando MAL -- la imagen
+#      ghcr.io/digsigna/migrations tiene `ENTRYPOINT ["/migrate.sh"]`
+#      (migrations/Dockerfile), y ese script (migrations/scripts/migrate.sh)
+#      espera `DATABASE_URL`, no `MYSQL_DSN` -- ejecuta
+#      `migrate -path=/migrations -database="$DATABASE_URL" $@` por su
+#      cuenta. Confirmado también en hsm-service/docker-compose.dev.yml:
+#      el servicio `migrate` ahí usa `DATABASE_URL` + `command: up`, nunca
+#      invoca `migrate` directo. La versión anterior de este archivo
+#      sobreescribía el ENTRYPOINT con un `sh -c` manual leyendo una
+#      variable (`MYSQL_DSN`) que la imagen real nunca lee -- no hubiera
+#      funcionado.
+#   3. Tag `:latest` -- hsm-service/docker-compose.dev.yml fija
+#      explícitamente un tag exacto (1.0.75 a la fecha) con un comentario
+#      extenso explicando por qué: Docker no re-pulea un tag cacheado
+#      localmente solo porque hay una versión nueva publicada, y esto ya
+#      causó un incidente real (una migración corrida 3 versiones atrás sin
+#      error visible). Se pinea al mismo tag acá por la misma razón.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -18,16 +38,12 @@ spec:
       restartPolicy: Never
       containers:
       - name: migrate
-        image: ghcr.io/digsigna/migrations:latest
-        imagePullPolicy: Always
+        image: ghcr.io/digsigna/migrations:1.0.75
+        imagePullPolicy: IfNotPresent
         env:
-        - name: MYSQL_DSN
+        - name: DATABASE_URL
           valueFrom:
             secretKeyRef:
               name: mysql-secrets
               key: connection_string
-        command: [ "sh", "-c" ]
-        args:
-        - |
-          echo "Running database migrations..."
-          migrate -path=/migrations -database "$MYSQL_DSN" up
+        args: [ "up" ]

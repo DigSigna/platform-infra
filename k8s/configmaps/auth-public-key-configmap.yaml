@@ -1,0 +1,26 @@
+# Migrado desde softhsm/k8s/auth-public-key-configmap.yaml. Clave pública
+# RSA -- no es un secreto, por eso va como ConfigMap y no Secret (igual que
+# en el original). Se agregó namespace explícito.
+#
+# FLAG: k8s/deployments/hsm-service.yaml ya NO monta este ConfigMap ni fija
+# HSM_AUTH_PUBLIC_KEY_PATH -- confirmado en hsm-service/docker-compose.dev.yml
+# que con HSM_AUTH_MODE=production (el modo real, no solo un nombre) el
+# servicio valida JWTs vía JWKS dinámico de identification-service
+# únicamente, sin usar ninguna llave pública estática. Se preserva el
+# archivo por si un modo no-JWKS se reintroduce más adelante, pero hoy no
+# tiene consumidor real en el Deployment de este repo.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auth-public-key
+  namespace: digsigna
+data:
+  public.pem: |
+    -----BEGIN RSA PUBLIC KEY-----
+    MIIBCgKCAQEA5IyeVZ6cAg2uR3Tow8mPFgQZhV+oTJXyHBGV+OOgvVjyvwPa+I71
+    v5DhmJHedDGmGTOtblIrE/TFjupRWUfWBGYfhtHQvE2c8twGpL6gI1ZO1UhlLIBt
+    VFOMPskdONrSStiIwzlAPam4xrxDkc2PSYYdZoqwOra9Th3RIqw9wHUlMgYF7Peu
+    SZkwhYTCJE/T0O1u/fRUMFMCE7N9BCy7/P/3fFE61WqBIAGRocBeXmLqETTxTRU7
+    C7VipINVdlNAeQjDw2LiiPcmdU5vCNaJL9VQEeFXZ4opAyXxwFQCtfCv5RSVrGHX
+    83VR82YVdd0g8WjHdxtNUypvZkABJdNk+QIDAQAB
+    -----END RSA PUBLIC KEY-----

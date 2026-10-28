@@ -1,0 +1,66 @@
+# Nuevo -- no migrado de ningún repo. Resuelve el gap señalado en
+# docs/env-vars-inventory.md: api-gateway necesita un Redis real para que
+# /ready valide algo de verdad (si GATEWAY_REDIS_ADDRESS está vacía, el
+# check cae a rate-limit en memoria y pasa trivialmente, sin significar
+# nada). Confirmado: sin AUTH/password en ningún entorno (ver inventario).
+#
+# Service se llama "redis" a propósito -- coincide con el nombre que
+# docker-compose.dev.yml de gateway-service ya usa (`redis:6379`), así que
+# k8s/envs/gateway-service.env.example apunta ahí sin traducir nada.
+#
+# Sin PVC: es solo cache de rate-limiting, perder el estado en un restart
+# es aceptable (mismo comportamiento que si el pod de Redis no existiera,
+# que es el fallback ya soportado por la app).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-gateway
+  namespace: digsigna
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-gateway
+  template:
+    metadata:
+      labels:
+        app: redis-gateway
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 6379
+          name: redis
+          protocol: TCP
+        readinessProbe:
+          tcpSocket:
+            port: 6379
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 6379
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: digsigna
+spec:
+  selector:
+    app: redis-gateway
+  ports:
+  - port: 6379
+    targetPort: 6379
+    protocol: TCP

@@ -1,0 +1,14 @@
+# Migrado desde softhsm/k8s/softhsm-configmap.yaml (renombrado para que el
+# nombre de archivo matchee el metadata.name "softhsm-config"). Se agregó
+# namespace explícito, sin otros cambios.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: softhsm-config
+  namespace: digsigna
+data:
+  softhsm2.conf: |
+    directories.tokendir = /var/lib/softhsm/tokens
+    objectstore.backend = file
+    log.level = INFO
+    slots.removable = false

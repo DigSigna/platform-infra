@@ -57,15 +57,12 @@ repo (`platform-infra`) — pendiente para la tarea 2/3.
 | certificate-service | `certificate-service.secret.yaml` | shape OK |
 | signing-service | `signing-service.secret.yaml` | shape OK |
 | identification-service | `identification-service.secret.yaml` | shape OK |
-| verification-service | `verification-service.secret.yml` | shape OK, pero **extensión `.yml` inconsistente** con el resto (`.secret.yaml`) |
-| api-gateway (`gateway-service`) | `gateway-service.secret.yaml` | **archivo vacío (0 bytes)** — falta el contenido |
+| verification-service | `verification-service.secret.yaml` | shape OK (extensión ya unificada — RESUELTO en tarea 2) |
+| api-gateway (`gateway-service`) | `gateway-service.secret.yaml` | shape OK (RESUELTO en tarea 2, ya tiene contenido real) |
 
-`audit-service.secret.yaml` también está vacío — y es correcto que lo esté
-con esta forma: audit-service no es productor, no necesita un Secret
-`*-audit-key`. Lo que audit-service sí necesita es su **propio** Secret con
-las 6 keys de productores como `AUDIT_KEY_<SERVICIO>` (mismo valor que cada
-Secret de arriba, montado con otro nombre de variable) — eso no tiene
-manifiesto propio todavía, es un gap real para la tarea 2.
+`audit-service.secret.yaml` (en `k8s/service-keys/`) ya existe con forma
+correcta: el lado receptor, con las 6 `AUDIT_KEY_<SERVICIO>` juntas —
+RESUELTO en tarea 2 (ver `k8s/service-keys/audit-service.secret.yaml`).
 
 ## Service-to-service auth más allá de auditoría: no existe
 
@@ -88,7 +85,7 @@ generar ningún Secret nuevo para esos tramos.
 | `KEYCLOAK_ADMIN_PASSWORD` | Secret | `admin` | No rotar — fake. Generar real antes de prod. Es contra `admin-cli`/realm `master`, no hay client_secret por realm (el login client es público, sin secret). |
 | `BOOTSTRAP_SECRET` | Secret | `dev-bootstrap-secret` | No rotar — fake. Generar real antes de prod (protege `POST /api/v1/bootstrap`). |
 | `AUDIT_API_KEY` | Secret | `dev-audit-shared-key-never-use-outside-dev` | Ya cubierto por el mecanismo de `generate-service-keys.sh`. |
-| `JWT_SIGNING_KEYS_DIR` (par RSA) | Secret/volumen | generado en memoria si falta | **Gap real**: hoy solo persiste en un volumen de dev. Sin algo equivalente en k8s (Secret o PVC), cada restart de pod invalida todos los tokens activos. Decidir en tarea 2/3. |
+| `JWT_SIGNING_KEYS_DIR` (par RSA) | Config (ruta) | generado en memoria si falta | RESUELTO: `k8s/storage/identification-service-jwt-keys-pvc.yaml` (PVC escribible, el proceso se auto-provisiona). **No usar `JWT_PRIVATE_KEY_PATH`/`JWT_PUBLIC_KEY_PATH`** — esas desactivan la rotación real que el código soporta (`signer.js`'s `rotate()` las rechaza explícitamente). Confirmado en una auditoría posterior que un primer intento (Secret + esas dos vars) sí las usaba por error — corregido. |
 | `REDIS_URL` | Config/Secret | vacío (sin Redis en dev) | Diferible — rate limiter cae a memory store si falta. |
 | `HSM_SERVICE_URL`, `CERTIFICATE_SERVICE_URL` | Config | URLs internas | No son secretos. |
 | `IDEMPOTENCY_TTL_MS` | Config | sin default documentado (24h hardcoded) | Decidir si fijar explícito. |
@@ -118,7 +115,7 @@ compose activo) — no usarlo como fuente de verdad.
 | `DB_URL` | Secret | `mysql://digsigna:digsigna@mysql:3306/digsigna` | No rotar — fake. Generar real. |
 | `HSM_SERVICE_BASE_URL`, `IDENTITY_SERVICE_BASE_URL` | Config | URLs internas | No secretos — llamadas vía JWT pass-through, sin key propia. |
 | `AUDIT_API_KEY` | Secret | `dev-audit-shared-key-never-use-outside-dev` | Cubierto por `generate-service-keys.sh`. |
-| `AUTH_JWKS_URL` / `AUTH_ISSUER` / `AUTH_AUDIENCE` | Config | URL/strings | No secretos. |
+| `AUTH_JWKS_URL` / `AUTH_ISSUER` / `AUTH_AUDIENCE` | Config | URL/strings | No secretos. RESUELTO: las 3 ya están en `k8s/manifests/certificate-service.secret.yaml` (`AUTH_ISSUER`/`AUTH_AUDIENCE` faltaban del manifiesto hasta una auditoría posterior, aunque ya estaban aquí documentadas). |
 | `DIGSIGNA_COMMON_TOKEN` | Secret de **build-time**, no runtime | PAT de GitHub, exportado por quien construye la imagen | No va en ningún Secret de k8s del pod — es un secret de CI/build (BuildKit secret mount), fuera del alcance de `k8s/`. |
 
 `HSM_LIBRARY_PATH`/`HSM_SLOT`/`HSM_PIN`/`HSM_TOKEN_LABEL` aparecen en
@@ -136,6 +133,7 @@ runtime). Específico de este servicio:
 | Variable | Tipo | Valor en dev | Notas |
 |---|---|---|---|
 | `TSA_PRIMARY_URL` / `TSA_SECONDARY_URL` | Config | `https://freetsa.org/tsr` / `http://time.certum.pl` | Servicios públicos gratuitos, sin credenciales. |
+| `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD`/`REDIS_DB` | Config/Secret | sin valor en dev | **No es diferible como en verification-service**: `GET /health` llama `check_redis()` de forma incondicional (no depende de `AUTH_TOKEN_CACHE_ENABLED`) — sin esto, el healthcheck del pod siempre reporta `status: "degraded"`. Agregadas a `k8s/manifests/signing-service.secret.yaml`, pero falta decidir Redis dedicado vs. reusar `k8s/deployments/redis-gateway.yaml` (gap abierto, ver `k8s/README.md`). |
 
 Mismas variables `HSM_*` muertas que certificate-service (vestigio PKCS11),
 no migrar.
@@ -153,8 +151,9 @@ hoy (solo si se habilita `AUTH_TOKEN_CACHE_ENABLED`, que está en `false`).
 | Variable | Tipo | Valor en dev | ¿Rotar antes de prod? |
 |---|---|---|---|
 | `GATEWAY_AUTH_JWKS_URL` | Config | `http://identification-service:3000/.well-known/jwks.json` | No secreto. Gateway no habla con Keycloak directo, solo con el JWKS propio de identification-service. |
-| `GATEWAY_REDIS_ADDRESS` | Config/Secret | `redis:6379` (sin AUTH, sin password) | **No es diferible**: `/ready` ya valida JWKS + un PING real a Redis cuando esta variable está seteada (si falta, cae a rate-limit en memoria y el check de Redis pasa trivialmente, sin significar nada). Hace falta un Redis real desplegado + esta variable en el entorno ya en esta ronda de trabajo. |
-| `AUDIT_API_KEY` | Secret | `dev-audit-shared-key-never-use-outside-dev` | api-gateway ya es productor real (ver arriba) — falta su Secret en `k8s/service-keys/gateway-service.secret.yaml` (vacío hoy) y su fila en `docs/service-key-map.md`. |
+| `GATEWAY_REDIS_ADDRESS` | Config/Secret | `redis:6379` (sin AUTH, sin password) | RESUELTO: Redis real en `k8s/deployments/redis-gateway.yaml` (Service "redis"), variable fijada en `k8s/envs/gateway-service.env.example`. |
+| `GATEWAY_CONFIG_PATH` / `GATEWAY_ENVIRONMENT` | Config | — (no existen en dev, CWD-relativo) | **Gap encontrado en auditoría posterior**: el Dockerfile de runtime no copia `config/` a la imagen (mismo patrón que hsm-service con `HSM_CONFIG_PATH`). RESUELTO: `k8s/configmaps/gateway-service-config.yaml` + estas dos vars en el Secret de env. `cors.allowed_origins` queda en placeholder hasta tener el dominio real del frontend. |
+| `AUDIT_API_KEY` | Secret | `dev-audit-shared-key-never-use-outside-dev` | api-gateway ya es productor real (ver arriba). RESUELTO en tarea 2: `k8s/service-keys/gateway-service.secret.yaml` ya tiene contenido y su fila en `docs/service-key-map.md`. |
 
 ### audit-service
 
@@ -196,7 +195,14 @@ comentarios que dicen "`AUDIT_API_KEY` todavía sin consumidor en este
 código" — desactualizados: los 5 (ahora 6, con api-gateway) ya la consumen
 activamente para mandar eventos a audit-service.
 
-## Resumen accionable para la tarea 2/3 (todavía no ejecutado)
+## Resumen accionable para la tarea 2/3 — TODO completado, ver abajo
+
+Checklist original de la tarea 1, dejado como registro histórico. Los 9
+puntos ya se ejecutaron (tareas 2/3 + una auditoría posterior de los 6
+repos restantes, ver `k8s/README.md` sección "Gaps conocidos"). El punto 6
+se resolvió con PVC + auto-rotación del propio proceso, no con un Secret
+estático (ver `k8s/storage/identification-service-jwt-keys-pvc.yaml` — un
+Secret hubiera desactivado la rotación real que el código soporta).
 
 1. Rotar el password real filtrado de la MySQL gestionada (hallazgo crítico,
    independiente de esta migración).

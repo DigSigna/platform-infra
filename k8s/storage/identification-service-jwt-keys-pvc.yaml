@@ -1,0 +1,41 @@
+# Reemplaza el plan anterior (Secret `identification-service-jwt-keys` +
+# JWT_PRIVATE_KEY_PATH/JWT_PUBLIC_KEY_PATH) -- ese plan deshabilitaba la
+# rotación real que el código ya soporta. Confirmado leyendo
+# identification-service/src/infrastructure/jwt/signer.js:
+#   - Con JWT_PRIVATE_KEY_PATH seteada (modo llave fija): `rotate()` tira
+#     explícitamente `Error('JWT key rotation is not supported when
+#     JWT_PRIVATE_KEY_PATH is set...')` -- ese modo asume que una llave
+#     nueva es una acción de ops (nuevo archivo + redeploy), no algo que el
+#     proceso pueda hacer solo. Era exactamente el modo que el Secret
+#     activaba.
+#   - Sin esa variable (modo self-managed), con JWT_SIGNING_KEYS_DIR
+#     seteada: el proceso genera su propio par si no hay nada persistido
+#     (loadOrGenerateKeyPair(), signer.js:90-133), lo guarda como JSON
+#     ({current, retired}) en `$JWT_SIGNING_KEYS_DIR/signing-keys.json`
+#     (modo 0600, explícito en cada escritura), y soporta rotate() real:
+#     múltiples llaves activas a la vez (la actual + las retiradas todavía
+#     dentro de su ventana de gracia), publicadas por kid en getJwks().
+#
+# Para que esto sobreviva un restart de pod (igual que el Secret resolvía),
+# necesita un volumen ESCRIBIBLE y persistente -- un Secret de k8s es de
+# solo lectura e inmutable, no sirve para que la app escriba su propio
+# estado ahí. Por eso PVC, no Secret.
+#
+# El Deployment de identification-service (todavía no existe en este
+# repo) debe:
+#   - Montar este PVC en, por ejemplo, /var/lib/identification-service/jwt-keys
+#   - Fijar JWT_SIGNING_KEYS_DIR a esa misma ruta
+#   - NO fijar JWT_PRIVATE_KEY_PATH/JWT_PUBLIC_KEY_PATH (su sola presencia
+#     desactiva la rotación, ver arriba)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: identification-service-jwt-keys
+  namespace: digsigna
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 64Mi
+  storageClassName: standard # do-block-storage en DigitalOcean Kubernetes -- confirmar, mismo estado "template" que k8s/storage/softhsm-pvc.yaml

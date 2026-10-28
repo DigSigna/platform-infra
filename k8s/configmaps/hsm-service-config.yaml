@@ -1,0 +1,79 @@
+# Reemplaza la versión migrada de softhsm/k8s/hsm-service-config.yaml --
+# esa versión estaba desactualizada (desface de información: softhsm/k8s/
+# quedó congelado en un estado anterior de la arquitectura real). Esta
+# versión es una copia fiel de hsm-service/config/config.production.yaml
+# (el propio repo del servicio documenta ese archivo como "version-controlled,
+# NO secrets" -- es la fuente de verdad real, confirmada contra
+# internal/infrastructure/config/config_types.go + app_config.go).
+#
+# Diffs reales contra lo que había migrado antes, todos confirmados leyendo
+# código real de hsm-service (no asumidos):
+#   - aeskeymanager.k8s.master_key_key: "master-aes-key-v1", no "master-key"
+#     (la versión vieja tenía el nombre de campo vestigial que nunca se usó).
+#   - max_sessions: 10, no 5.
+#   - hsm.pin: "" (se fija por HSM_PIN env var, nunca iba a usarse el "1234"
+#     que había en el YAML viejo -- ese PIN de desarrollo no debía estar
+#     commiteado en un ConfigMap aunque fuera dead config).
+#   - auth.mode: "production" (no "development"), auth.jwks_url: "" (se
+#     fija por HSM_AUTH_JWKS_URL -- ver k8s/deployments/hsm-service.yaml,
+#     apunta a identification-service, no a localhost).
+#   - Sin `database.enabled`: ese campo no existe en DatabaseConfig
+#     (config_types.go) ni se bindea a ningún env var en app_config.go --
+#     dead config en la versión vieja, no se reintroduce acá.
+#   - auth.public_key_path: "" y queda sin fijar vía env -- confirmado en
+#     docker-compose.dev.yml de hsm-service que con auth.mode=production
+#     no se setea HSM_AUTH_PUBLIC_KEY_PATH; el flujo real usa solo JWKS.
+#     Ver nota en k8s/configmaps/auth-public-key-configmap.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hsm-service-config
+  namespace: digsigna
+data:
+  config.yaml: |
+    environment: production
+
+    server:
+      address: ":8080"
+
+    database:
+      connection_string: "" # se fija vía DATABASE_URL env var
+
+    hsm:
+      library_path: "/usr/lib/softhsm/libsofthsm2.so"
+      token_label: "digsigna-token"
+      pin: "" # se fija vía HSM_PIN env var
+      slot: 0
+      no_slots: 4
+      session_timeout: "30s"
+      max_sessions: 10
+
+    aeskeymanager:
+      strategy: "k8s"
+      k8s:
+        in_cluster: true
+        secret_name: "hsm-secrets"
+        secret_namespace: "default" # pisado en runtime por HSM_AESKEYMANAGER_K8S_SECRET_NAMESPACE (fieldRef al namespace real del pod)
+        key_id: "master-aes-key-v1"
+        master_key_key: "master-aes-key-v1"
+        old_master_key_key: "master-key-old"
+      local:
+        master_key: ""
+        key_id: "master-aes-key-v1"
+
+    audit:
+      enabled: true
+      strategy: "hybrid"
+      http:
+        base_url: "http://audit-service:8080"
+        timeout: "5s"
+      hybrid:
+        circuit_breaker:
+          max_failures: 5
+          reset_timeout: "30s"
+
+    auth:
+      mode: "production"
+      public_key_path: "" # sin fijar -- modo production usa JWKS, no llave local
+      jwks_url: "" # se fija vía HSM_AUTH_JWKS_URL env var
+      jwks_cache_minutes: 60
