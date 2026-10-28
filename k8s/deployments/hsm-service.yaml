@@ -91,7 +91,7 @@ spec:
       # MAIN APP (Go)
       # -------------------------------------------------
       - name: hsm-service
-        image: ghcr.io/digsigna/hsm-service:1.0.9
+        image: ghcr.io/digsigna/hsm-service:1.0.19
         imagePullPolicy: Always
         env:
         - name: HSM_CONFIG_PATH

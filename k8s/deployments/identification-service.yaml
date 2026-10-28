@@ -45,7 +45,7 @@ spec:
           claimName: identification-service-jwt-keys
       containers:
       - name: identification-service
-        image: ghcr.io/digsigna/identification-service:REPLACE_VERSION
+        image: ghcr.io/digsigna/identification-service:1.0.4
         imagePullPolicy: Always
         env:
         - name: NODE_ENV
@@ -130,7 +130,6 @@ spec:
         - containerPort: 3000
           name: http
           protocol: TCP
-
         # /api/v1/health/live y /api/v1/health/ready existen en el código
         # a propósito para esto (src/interfaces/routes/health-routes.js) --
         # a diferencia del /health genérico (que mezcla ambos y devuelve

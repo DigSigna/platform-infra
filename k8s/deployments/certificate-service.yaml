@@ -39,7 +39,7 @@ spec:
       - name: ghcr-creds
       containers:
       - name: certificate-service
-        image: ghcr.io/digsigna/certificate-service:REPLACE_VERSION
+        image: ghcr.io/digsigna/certificate-service:1.0.13
         imagePullPolicy: Always
         env:
         - name: ENVIRONMENT
@@ -114,7 +114,6 @@ spec:
         - containerPort: 8000
           name: http
           protocol: TCP
-
         # GET /api/v1/health (py_common, compartido con signing/
         # verification-service) siempre devuelve 200, incluso con
         # status "degraded" en el body (confirmado leyendo

@@ -44,7 +44,7 @@ spec:
           name: gateway-service-config
       containers:
       - name: gateway-service
-        image: ghcr.io/digsigna/gateway-service:REPLACE_VERSION
+        image: ghcr.io/digsigna/gateway-service:1.0.5
         imagePullPolicy: Always
         env:
         - name: GATEWAY_AUTH_MODE
@@ -93,7 +93,6 @@ spec:
         - containerPort: 8080
           name: http
           protocol: TCP
-
         # /health: liveness pura, siempre 200 (router.go). /ready: SÍ
         # verifica dependencias reales del propio gateway (JWKS cargado +
         # ping al rate limiter) y devuelve 503 si alguna falla -- el

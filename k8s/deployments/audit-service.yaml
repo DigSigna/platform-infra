@@ -62,7 +62,7 @@ spec:
           name: audit-service-config
       containers:
       - name: audit-service
-        image: ghcr.io/digsigna/audit-service:REPLACE_VERSION
+        image: ghcr.io/digsigna/audit-service:1.0.5
         imagePullPolicy: Always
         env:
         - name: AUDIT_CONFIG_PATH
@@ -126,7 +126,6 @@ spec:
         - containerPort: 8080
           name: http
           protocol: TCP
-
         # /health reporta solo que el proceso está arriba -- no verifica
         # DB ni ninguna dependencia (confirmado leyendo
         # internal/interfaces/http/routes/router.go's healthCheck(), que

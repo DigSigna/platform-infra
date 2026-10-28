@@ -46,7 +46,7 @@ spec:
       - name: ghcr-creds
       containers:
       - name: signing-service
-        image: ghcr.io/digsigna/signing-service:REPLACE_VERSION
+        image: ghcr.io/digsigna/signing-service:1.0.12
         imagePullPolicy: Always
         env:
         - name: ENVIRONMENT
@@ -133,7 +133,6 @@ spec:
         - containerPort: 8001
           name: http
           protocol: TCP
-
         # Mismo caveat que certificate-service -- GET /api/v1/health
         # (py_common) siempre devuelve 200, ver ese Deployment.
         livenessProbe:
