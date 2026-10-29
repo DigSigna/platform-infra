@@ -1,0 +1,4 @@
+# Estado local de scripts/smoke-test.sh entre corridas -- credenciales del
+# admin del tenant raíz de bootstrap (sólo relevante para el ciclo de
+# minikube local, nunca para un cluster real). Ver scripts/smoke-test.sh.
+.smoke-test-state.json
