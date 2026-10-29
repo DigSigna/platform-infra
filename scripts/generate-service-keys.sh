@@ -34,14 +34,21 @@ NAMESPACE="${NAMESPACE:-digsigna}"
 # X-Service-API-Key a audit-service -- el plan original decía "todavía no
 # existe", quedó desactualizado (ver docs/env-vars-inventory.md). NO incluye
 # audit-service: es quien valida estas keys, no quien las produce.
-declare -A SERVICE_SECRETS=(
-  [hsm-service]="hsm-service-audit-key"
-  [certificate-service]="certificate-service-audit-key"
-  [signing-service]="signing-service-audit-key"
-  [identification-service]="identification-service-audit-key"
-  [verification-service]="verification-service-audit-key"
-  [gateway-service]="gateway-service-audit-key"
-)
+# Lista + función en vez de `declare -A` (bash 4+) -- macOS trae bash 3.2 de
+# fábrica (Apple lo congeló ahí por licencia) y `declare -A` falla ahí.
+ALL_PRODUCERS="hsm-service certificate-service signing-service identification-service verification-service gateway-service"
+
+secret_name_for() {
+  case "$1" in
+    hsm-service) echo "hsm-service-audit-key" ;;
+    certificate-service) echo "certificate-service-audit-key" ;;
+    signing-service) echo "signing-service-audit-key" ;;
+    identification-service) echo "identification-service-audit-key" ;;
+    verification-service) echo "verification-service-audit-key" ;;
+    gateway-service) echo "gateway-service-audit-key" ;;
+    *) echo "" ;;
+  esac
+}
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -55,13 +62,13 @@ require_cmd openssl
 
 targets=("$@")
 if [ ${#targets[@]} -eq 0 ]; then
-  targets=("${!SERVICE_SECRETS[@]}")
+  targets=($ALL_PRODUCERS)
 fi
 
 for service in "${targets[@]}"; do
-  secret_name="${SERVICE_SECRETS[$service]:-}"
+  secret_name="$(secret_name_for "$service")"
   if [ -z "$secret_name" ]; then
-    echo "Error: '$service' no es un productor conocido. Válidos: ${!SERVICE_SECRETS[*]}" >&2
+    echo "Error: '$service' no es un productor conocido. Válidos: $ALL_PRODUCERS" >&2
     exit 1
   fi
 

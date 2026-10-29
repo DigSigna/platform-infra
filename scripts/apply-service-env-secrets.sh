@@ -22,15 +22,22 @@ NAMESPACE="${NAMESPACE:-digsigna}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_DIR="${ENV_DIR:-$SCRIPT_DIR/../k8s/envs}"
 
-declare -A SERVICES=(
-  [identification-service]="identification-service-env"
-  [hsm-service]="hsm-service-env"
-  [certificate-service]="certificate-service-env"
-  [signing-service]="signing-service-env"
-  [verification-service]="verification-service-env"
-  [gateway-service]="gateway-service-env"
-  [audit-service]="audit-service-env"
-)
+# Lista + función en vez de `declare -A` (bash 4+) -- macOS trae bash 3.2 de
+# fábrica (Apple lo congeló ahí por licencia) y `declare -A` falla ahí.
+ALL_SERVICES="identification-service hsm-service certificate-service signing-service verification-service gateway-service audit-service"
+
+secret_name_for() {
+  case "$1" in
+    identification-service) echo "identification-service-env" ;;
+    hsm-service) echo "hsm-service-env" ;;
+    certificate-service) echo "certificate-service-env" ;;
+    signing-service) echo "signing-service-env" ;;
+    verification-service) echo "verification-service-env" ;;
+    gateway-service) echo "gateway-service-env" ;;
+    audit-service) echo "audit-service-env" ;;
+    *) echo "" ;;
+  esac
+}
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -43,13 +50,13 @@ require_cmd kubectl
 
 targets=("$@")
 if [ ${#targets[@]} -eq 0 ]; then
-  targets=("${!SERVICES[@]}")
+  targets=($ALL_SERVICES)
 fi
 
 for service in "${targets[@]}"; do
-  secret_name="${SERVICES[$service]:-}"
+  secret_name="$(secret_name_for "$service")"
   if [ -z "$secret_name" ]; then
-    echo "Error: '$service' no es un servicio conocido. Válidos: ${!SERVICES[*]}" >&2
+    echo "Error: '$service' no es un servicio conocido. Válidos: $ALL_SERVICES" >&2
     exit 1
   fi
 
