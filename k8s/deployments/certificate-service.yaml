@@ -104,6 +104,37 @@ spec:
               name: certificate-service-env
               key: AUDIT_HTTP_BASE_URL
 
+        # Sin esto, el kubelet inyecta sus propias env vars de "service
+        # link" para el Service "redis" (k8s/deployments/redis-gateway.yaml)
+        # en TODO pod del namespace -- entre ellas REDIS_PORT="tcp://<ip>:6379",
+        # que choca de nombre con el REDIS_PORT (int) que espera
+        # app/core/config.py y revienta Settings() al boot
+        # (pydantic_core.ValidationError: int_parsing). Mismo fix que
+        # signing-service/verification-service ya tienen: fijarlo a mano
+        # gana sobre la inyección automática. Comparte el Redis de
+        # redis-gateway.yaml -- este servicio solo hace PING, sin riesgo de
+        # colisión de keys (ver nota en signing-service.env.example).
+        - name: REDIS_HOST
+          valueFrom:
+            secretKeyRef:
+              name: certificate-service-env
+              key: REDIS_HOST
+        - name: REDIS_PORT
+          valueFrom:
+            secretKeyRef:
+              name: certificate-service-env
+              key: REDIS_PORT
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: certificate-service-env
+              key: REDIS_PASSWORD
+        - name: REDIS_DB
+          valueFrom:
+            secretKeyRef:
+              name: certificate-service-env
+              key: REDIS_DB
+
         - name: AUDIT_API_KEY
           valueFrom:
             secretKeyRef:
