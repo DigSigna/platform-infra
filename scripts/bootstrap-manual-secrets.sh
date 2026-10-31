@@ -19,6 +19,7 @@
 # Uso:
 #   GHCR_USERNAME=... GHCR_TOKEN=... GHCR_EMAIL=... \
 #   MYSQL_CONNECTION_STRING='mysql://user:pass@tcp(host:3306)/digsigna?tls=true' \
+#   # (database_url se deriva solo de MYSQL_CONNECTION_STRING, no hace falta pasarlo aparte)
 #   HSM_PIN=... HSM_MASTER_AES_KEY_V1=... \
 #   KEYCLOAK_ADMIN_PASSWORD=... KEYCLOAK_DB_HOST=... KEYCLOAK_DB_PASSWORD=... \
 #     ./bootstrap-manual-secrets.sh
@@ -72,12 +73,27 @@ else
 fi
 
 # --- 2. mysql-secrets -------------------------------------------------------
+# Dos campos a partir de UNA sola variable de entrada (MYSQL_CONNECTION_STRING,
+# formato tcp(host:puerto)): connection_string se guarda tal cual (lo que
+# espera golang-migrate en migrations-job), y database_url se deriva
+# quitándole el tcp(...) (lo que espera el parser propio de hsm-service --
+# ver el comentario de cabecera de k8s/shared-secrets/mysql-secrets.secret.yaml,
+# los dos formatos NO son intercambiables). Derivarlo así, en vez de pedir
+# una segunda variable de entorno, evita que connection_string y database_url
+# puedan quedar desincronizados entre sí.
 if secret_exists mysql-secrets; then
   echo "== Secret 'mysql-secrets' ya existe, se omite =="
 elif [ -n "${MYSQL_CONNECTION_STRING:-}" ]; then
-  apply_secret mysql-secrets --from-literal="connection_string=$MYSQL_CONNECTION_STRING"
+  mysql_database_url="$(printf '%s' "$MYSQL_CONNECTION_STRING" | sed -E 's#@tcp\(([^)]*)\)/#@\1/#')"
+  if [ "$mysql_database_url" = "$MYSQL_CONNECTION_STRING" ]; then
+    echo "Error: MYSQL_CONNECTION_STRING no tiene la forma esperada '...@tcp(host:puerto)/...' -- no se pudo derivar database_url." >&2
+    exit 1
+  fi
+  apply_secret mysql-secrets \
+    --from-literal="connection_string=$MYSQL_CONNECTION_STRING" \
+    --from-literal="database_url=$mysql_database_url"
 else
-  missing_vars_message "mysql-secrets" "  kubectl create secret generic mysql-secrets --from-literal=connection_string=\"mysql://usuario:password@tcp(host:3306)/digsigna?tls=true\" -n $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+  missing_vars_message "mysql-secrets" "  kubectl create secret generic mysql-secrets --from-literal=connection_string=\"mysql://usuario:password@tcp(host:3306)/digsigna?tls=true\" --from-literal=database_url=\"mysql://usuario:password@host:3306/digsigna?tls=true\" -n $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
   (o exportar MYSQL_CONNECTION_STRING y volver a correr este script)"
   exit 1
 fi

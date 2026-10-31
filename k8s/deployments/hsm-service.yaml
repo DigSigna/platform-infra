@@ -101,7 +101,7 @@ spec:
           valueFrom:
             secretKeyRef:
               name: mysql-secrets
-              key: connection_string
+              key: database_url
 
         - name: HSM_ENVIRONMENT
           value: "production"
@@ -216,6 +216,12 @@ spec:
         imagePullPolicy: Always
         securityContext:
           runAsNonRoot: true
+          # UID numérico explícito: la imagen declara "USER softhsm" (nombre,
+          # no número -- softhsm/Dockerfile:14 lo crea con -u 1000), y sin
+          # esto el kubelet no puede verificar "non-root" sin ejecutar el
+          # contenedor, así que rechaza el pod con "cannot verify user is
+          # non-root" en vez de arrancarlo. Mismo UID que el fsGroup del pod.
+          runAsUser: 1000
           allowPrivilegeEscalation: false
           capabilities:
             drop:
