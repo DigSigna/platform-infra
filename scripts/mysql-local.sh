@@ -87,8 +87,13 @@ cmd_up() {
 
   echo
   echo "MySQL descartable lista, publicada en el puerto $PORT del host."
+  echo "tls=skip-verify es a propósito: este contenedor no tiene un cert válido"
+  echo "para <HOST> (ej. host.minikube.internal), y el parser propio de"
+  echo "hsm-service (ParseMySQLConnectionString) fuerza tls=true si el DSN no"
+  echo "trae ningún tls= explícito -- sin esto, hsm-service rompe con"
+  echo "'x509: certificate is not valid for any names'."
   echo "Antes de 'make k8s-bootstrap' (ver cloud-init/minikube/Guide.md para <HOST>):"
-  echo "  export MYSQL_CONNECTION_STRING=\"mysql://$DB_USER:$DB_PASSWORD@tcp(<HOST>:$PORT)/$DATABASE?parseTime=true\""
+  echo "  export MYSQL_CONNECTION_STRING=\"mysql://$DB_USER:$DB_PASSWORD@tcp(<HOST>:$PORT)/$DATABASE?parseTime=true&tls=skip-verify\""
   echo "  export KEYCLOAK_DB_HOST=<HOST>"
   echo "  export KEYCLOAK_DB_USERNAME=$KEYCLOAK_DB_USERNAME"
   echo "  export KEYCLOAK_DB_PASSWORD=$KEYCLOAK_DB_PASSWORD"
