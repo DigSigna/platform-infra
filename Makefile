@@ -40,6 +40,11 @@ MINIKUBE_ADDONS ?= ingress,metrics-server
 
 GATEWAY_URL ?= http://$(shell $(MINIKUBE) ip 2>/dev/null)
 
+# Puerto local del kubectl port-forward que usa smoke-test (ver el target
+# más abajo para el por qué GATEWAY_URL de arriba no alcanza con el driver
+# docker en macOS).
+GATEWAY_LOCAL_PORT ?= 18080
+
 # MySQL descartable del ciclo de prueba (NO la gestionada real de DO) -- ver
 # scripts/mysql-local.sh y cloud-init/minikube/Guide.md.
 MYSQL_LOCAL_CONTAINER ?= digsigna-mysql-local
@@ -142,9 +147,30 @@ k8s-deploy:
 # smoke-test -- curl real: login -> CA/certificado -> firmar -> verificar.
 # Ver scripts/smoke-test.sh para el detalle del flujo y por qué pasa por una
 # Organization en el medio.
+#
+# GATEWAY_URL (basado en `minikube ip`) NO alcanza con el driver docker en
+# macOS -- confirmado: la IP del nodo (192.168.49.x) vive en la red interna
+# de Docker Desktop, que no es rutable desde el host sin `minikube tunnel`
+# corriendo aparte (requiere sudo, en otra terminal), y el contenedor del
+# nodo tampoco publica el puerto 80 ni el NodePort de
+# ingress-nginx-controller al host (`docker ps` lo confirma: solo expone
+# 22/2376/5000/8443/32443). Un `kubectl port-forward` al Service de
+# ingress-nginx-controller esquiva todo eso -- atraviesa la API de k8s, así
+# que funciona igual sin importar el driver o el OS, sin terminal aparte ni
+# sudo. Para apuntar a un gateway YA alcanzable que no sea este minikube
+# (ej. uno real), llamar a scripts/smoke-test.sh directo con tu propio
+# GATEWAY_URL en vez de este target.
 # ---------------------------------------------------------------------------
 smoke-test:
-	GATEWAY_URL=$(GATEWAY_URL) scripts/smoke-test.sh
+	@$(KUBECTL) port-forward -n ingress-nginx svc/ingress-nginx-controller $(GATEWAY_LOCAL_PORT):80 >/tmp/digsigna-smoke-test-port-forward.log 2>&1 & \
+	PF_PID=$$!; \
+	trap 'kill $$PF_PID 2>/dev/null || true' EXIT; \
+	echo "== Port-forward ingress-nginx-controller:80 -> localhost:$(GATEWAY_LOCAL_PORT) (PID $$PF_PID) =="; \
+	for i in $$(seq 1 30); do \
+		curl -s -o /dev/null "http://localhost:$(GATEWAY_LOCAL_PORT)" && break || true; \
+		sleep 1; \
+	done; \
+	GATEWAY_URL=http://localhost:$(GATEWAY_LOCAL_PORT) scripts/smoke-test.sh
 
 # ---------------------------------------------------------------------------
 # teardown -- borra el nodo de minikube Y la MySQL descartable (mysql-local-down),
