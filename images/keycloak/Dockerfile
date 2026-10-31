@@ -15,6 +15,6 @@
 # juntos si se actualiza la versión base de Keycloak.
 FROM quay.io/keycloak/keycloak:22.0.0
 
-ADD https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.1.0/mysql-connector-j-8.1.0.jar /opt/keycloak/providers/mysql-connector-j-8.1.0.jar
+ADD --chown=keycloak:root --chmod=644 https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.1.0/mysql-connector-j-8.1.0.jar /opt/keycloak/providers/mysql-connector-j-8.1.0.jar
 
 RUN /opt/keycloak/bin/kc.sh build --db=mysql
