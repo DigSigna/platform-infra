@@ -158,14 +158,22 @@ kubectl create secret generic audit-service-producer-keys \
 
 ### 3. Pares de claves / secretos compartidos sin forma `KEY=VALUE` → scripts dedicados
 
-- `mysql-secrets` (`connection_string` completo, con host/usuario/password
-  de la MySQL gestionada): no hay script — se aplica a mano, porque esos
-  valores vienen de DigitalOcean (ver `terraform/modules/database/`), no se
-  generan localmente.
+- `mysql-secrets` (host/usuario/password de la MySQL gestionada, en DOS
+  formas distintas — ver el comentario de cabecera de
+  `k8s/shared-secrets/mysql-secrets.secret.yaml` para el porqué:
+  `connection_string` con `tcp(host:puerto)` para `migrations-job`
+  (golang-migrate), `database_url` sin `tcp(...)` para `hsm-service` (su
+  parser propio arma el `tcp(...)` él mismo). Son el mismo host/usuario/
+  password — NO pegar el mismo valor en los dos campos.
+  `scripts/bootstrap-manual-secrets.sh` deriva `database_url` solo a
+  partir de `MYSQL_CONNECTION_STRING`; esto de abajo es para aplicarlo a
+  mano si no se usa el script, porque esos valores vienen de DigitalOcean
+  (ver `terraform/modules/database/`), no se generan localmente.
 
   ```sh
   kubectl create secret generic mysql-secrets \
     --from-literal=connection_string="mysql://usuario:password@tcp(host:3306)/digsigna?tls=true" \
+    --from-literal=database_url="mysql://usuario:password@host:3306/digsigna?tls=true" \
     -n digsigna --dry-run=client -o yaml | kubectl apply -f -
   ```
 

@@ -94,7 +94,7 @@ generar ningún Secret nuevo para esos tramos.
 
 | Variable | Tipo | Valor en dev | ¿Rotar antes de prod? |
 |---|---|---|---|
-| `DATABASE_URL` | Secret | `digsigna:digsigna@tcp(mysql:3306)/digsigna?...` | No rotar — fake. Generar real. |
+| `DATABASE_URL` | Secret | `mysql://digsigna:digsigna@mysql:3306/digsigna?parseTime=true` (SIN `tcp(...)` — el parser propio de hsm-service, `internal/infrastructure/database/parse.go`, hace `url.Parse()` directo y arma el `tcp(...)` él mismo; con `tcp(...)` ya puesto rompe con "invalid port after host"). En k8s viene de `mysql-secrets.database_url`, NO de `connection_string` (ese es el formato `tcp(...)` que usa `migrations-job`/golang-migrate — ver cabecera de `k8s/shared-secrets/mysql-secrets.secret.yaml`). | No rotar — fake. Generar real. |
 | `HSM_PIN` | Secret | `1234` | No rotar — fake, y el único PIN que lee el código (no existe un SO-PIN consumido por la app Go). Generar real antes de prod. |
 | `HSM_LIBRARY_PATH`, `HSM_TOKEN_LABEL`, `HSM_SLOT` | Config | rutas/slot de SoftHSM | No secretos. |
 | `HSM_AESKEYMANAGER_STRATEGY` | Config | `local` (dev) / `k8s` (prod, default) | — |
@@ -159,7 +159,7 @@ hoy (solo si se habilita `AUTH_TOKEN_CACHE_ENABLED`, que está en `false`).
 
 | Variable | Tipo | Valor en dev | Notas |
 |---|---|---|---|
-| `DATABASE_URL` | Secret | `digsigna:digsigna@tcp(mysql:3306)/digsigna?...` | No rotar — fake. Generar real. |
+| `DATABASE_URL` | Secret | `digsigna:digsigna@tcp(mysql:3306)/digsigna?parseTime=true` (correcto así: SIN el prefijo `mysql://` — `k8s/envs/audit-service.env.example` ya lo tiene bien). audit-service tiene su propia copia de `ParseMySQLConnectionString` (idéntica a la de hsm-service) — si ese DSN alguna vez se le pasa CON el prefijo `mysql://` Y `tcp(...)` al mismo tiempo, pega el mismo bug que tenía hsm-service (ver su fila arriba): esa combinación puntual es la que rompe, no `tcp(...)` por sí solo. Viene de su propio Secret `audit-service-env` (`k8s/manifests/audit-service.secret.yaml`), no de `mysql-secrets`. | No rotar — fake. Generar real. |
 | `AUDIT_KEY_HSM_SERVICE`, `AUDIT_KEY_CERTIFICATE_SERVICE`, `AUDIT_KEY_SIGNING_SERVICE`, `AUDIT_KEY_IDENTIFICATION_SERVICE`, `AUDIT_KEY_VERIFICATION_SERVICE`, `AUDIT_KEY_API_GATEWAY` | Secret (6, no 5) | `dev-audit-shared-key-never-use-outside-dev` en las 6 | Mismo valor que el Secret `*-audit-key` de cada productor, montado con otro nombre de variable en el pod de audit-service. **`AUDIT_KEY_API_GATEWAY` es nueva, no documentada todavía.** |
 | `AUDIT_AUTH_JWKS_URL` / `AUDIT_AUTH_MODE` | Config | — | Para validar JWT de endpoints de usuario final (no de ingestión), separado del mecanismo de arriba. |
 
