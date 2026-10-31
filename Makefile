@@ -118,11 +118,12 @@ k8s-deploy:
 	@echo "== Keycloak + hsm-service + redis =="
 	$(KUBECTL) apply -f k8s/deployments/redis-gateway.yaml -f k8s/deployments/hsm-service.yaml -f k8s/deployments/keycloak.yaml
 	$(KUBECTL) rollout status deployment/redis-gateway -n $(NAMESPACE)
-	$(KUBECTL) rollout status deployment/hsm-service -n $(NAMESPACE)
 	$(KUBECTL) rollout status deployment/keycloak -n $(NAMESPACE)
 	@echo "== identification-service =="
 	$(KUBECTL) apply -f k8s/deployments/identification-service.yaml
 	$(KUBECTL) rollout status deployment/identification-service -n $(NAMESPACE)
+	@echo "== hsm-service (recién ahora se confirma su rollout -- ver k8s/README.md, 'Orden para aplicar todo desde cero', pasos 9-10: hace fetch SÍNCRONO de JWKS contra identification-service al arrancar, sin fallback, así que hace CrashLoopBackOff normal/esperado hasta este punto, no un fallo) =="
+	$(KUBECTL) rollout status deployment/hsm-service -n $(NAMESPACE)
 	@echo "== certificate-service + audit-service =="
 	$(KUBECTL) apply -f k8s/deployments/certificate-service.yaml -f k8s/deployments/audit-service.yaml
 	$(KUBECTL) rollout status deployment/certificate-service -n $(NAMESPACE)
