@@ -12,12 +12,12 @@ un endpoint administrativo), eso se trata aparte, no en esta tabla.
 
 | Servicio | Secret en k8s | Namespace | Permiso otorgado | Fecha de generación | Fingerprint |
 |---|---|---|---|---|---|
-| hsm-service | `hsm-service-audit-key` | `digsigna` | `audit-service:events:write` | 2026-10-31T02:02:48Z | sha256:723fb0fd0363 |
-| certificate-service | `certificate-service-audit-key` | `digsigna` | `audit-service:events:write` | 2026-10-31T02:02:48Z | sha256:d7ce51414201 |
-| signing-service | `signing-service-audit-key` | `digsigna` | `audit-service:events:write` | 2026-10-31T02:02:48Z | sha256:af8e19752571 |
-| identification-service | `identification-service-audit-key` | `digsigna` | `audit-service:events:write` | 2026-10-31T02:02:48Z | sha256:9f29881a9f5e |
-| verification-service | `verification-service-audit-key` | `digsigna` | `audit-service:events:write` | 2026-10-31T02:02:48Z | sha256:006c023dafee |
-| api-gateway (repo `gateway-service`) | `gateway-service-audit-key` | `digsigna` | `audit-service:events:write` | 2026-10-31T02:02:48Z | sha256:43300256734b |
+| hsm-service | `hsm-service-audit-key` | `digsigna` | `audit-service:events:write` | 2026-11-03T08:00:57Z | sha256:2f96da1a10f5 |
+| certificate-service | `certificate-service-audit-key` | `digsigna` | `audit-service:events:write` | 2026-11-03T08:00:57Z | sha256:a8d0e03fa07f |
+| signing-service | `signing-service-audit-key` | `digsigna` | `audit-service:events:write` | 2026-11-03T08:00:57Z | sha256:3e1927c8999a |
+| identification-service | `identification-service-audit-key` | `digsigna` | `audit-service:events:write` | 2026-11-03T08:00:57Z | sha256:c543be828482 |
+| verification-service | `verification-service-audit-key` | `digsigna` | `audit-service:events:write` | 2026-11-03T08:00:57Z | sha256:179979ad3432 |
+| api-gateway (repo `gateway-service`) | `gateway-service-audit-key` | `digsigna` | `audit-service:events:write` | 2026-11-03T08:00:57Z | sha256:6f3d571f6f7e |
 
 `verification-service` no estaba en la lista original del plan, pero ya usa
 el mismo wiring de py-common/audit hybrid que certificate-service y
