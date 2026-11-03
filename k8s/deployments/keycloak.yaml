@@ -131,12 +131,31 @@ spec:
         # diferencia del healthcheck de Docker Compose en dev (CMD-based,
         # necesitaba el truco de /dev/tcp porque la imagen ubi-micro no
         # trae curl/wget), no depende de ningún binario dentro de la imagen.
+        # startupProbe: el primer boot corre una migración real de Liquibase
+        # contra MySQL + el arranque de Quarkus -- en un nodo chico (1vCPU)
+        # esto tarda más que los 120s que livenessProbe (abajo) tolera, así
+        # que sin esto kubelet mandaba SIGTERM a mitad de la migración (exit
+        # 143), cortando el log de Liquibase antes de que llegara a escribir
+        # el detalle real de la excepción. startupProbe desactiva liveness/
+        # readiness hasta el primer éxito, dándole hasta 300s de gracia solo
+        # para este arranque -- después, liveness/readiness vuelven a regir
+        # con su timing normal (más estricto, correcto para detectar un
+        # colgado real en producción).
+        startupProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+
         livenessProbe:
           httpGet:
             path: /health/live
             port: 8080
             scheme: HTTP
-          initialDelaySeconds: 60
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 6
