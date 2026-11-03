@@ -1,11 +1,8 @@
 # Migrado desde softhsm/k8s/softhsm-pvc.yaml. Se agregó namespace
-# explícito. storageClassName queda en "standard" tal cual el original --
-# el nombre real de storage class en DOKS suele ser "do-block-storage" (ver
-# comentario original), pero no hay cuenta de DO real todavía para
-# confirmarlo (mismo estado "template" que terraform/, ver terraform/README.md).
-# Confirmar el nombre exacto de storageClassName contra
-# `kubectl get storageclass` una vez el cluster DOKS esté arriba, antes de
-# aplicar esto.
+# explícito. storageClassName confirmado contra `kubectl get storageclass`
+# en el cluster DOKS real (digsigna-prod-doks, 2026-11-03): el default es
+# "do-block-storage" (CSI dobs.csi.digitalocean.com) -- no existe ninguna
+# clase llamada "standard" en este cluster.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -17,4 +14,4 @@ spec:
   resources:
     requests:
       storage: 1Gi
-  storageClassName: standard # do-block-storage en DigitalOcean Kubernetes -- confirmar
+  storageClassName: do-block-storage

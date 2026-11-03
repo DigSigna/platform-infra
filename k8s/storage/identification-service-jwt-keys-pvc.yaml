@@ -38,4 +38,4 @@ spec:
   resources:
     requests:
       storage: 64Mi
-  storageClassName: standard # do-block-storage en DigitalOcean Kubernetes -- confirmar, mismo estado "template" que k8s/storage/softhsm-pvc.yaml
+  storageClassName: do-block-storage # confirmado contra `kubectl get storageclass` en digsigna-prod-doks (2026-11-03)
