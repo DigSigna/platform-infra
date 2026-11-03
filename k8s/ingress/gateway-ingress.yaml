@@ -21,16 +21,17 @@
 #      Cloud Controller Manager traduce en un Load Balancer real con IP
 #      pública -- ESE es el recurso que debe recibir el tráfico de
 #      80/443 que el firewall ya abre, no este Ingress directamente.
-#   2. Sin TLS/cert-manager todavía: no hay dominio real decidido (mismo
-#      estado que `cors.allowed_origins` en
-#      k8s/configmaps/gateway-service-config.yaml -- placeholder hasta
-#      tener el dominio real del frontend). Sin bloque `tls:` ni
-#      anotaciones de cert-manager -- agregar cuando haya dominio +
-#      certificado reales, no antes.
-#   3. Sin regla de `host:` -- mismo motivo que el punto 2. Esto hace de
-#      este Ingress el backend default de la IngressClass "nginx" (sirve
-#      cualquier Host header que llegue) hasta que haya un dominio real
-#      para acotarlo.
+#   2. TLS vía cert-manager (ClusterIssuer "letsencrypt-prod", ver
+#      k8s/ingress/letsencrypt-clusterissuer.yaml) -- challenge HTTP-01
+#      contra este mismo ingress-nginx, sin depender de un Service type
+#      LoadBalancer ni de un webhook de DNS del proveedor. Dominio real:
+#      api.firmasdigitales.com.mx (A record -> IP pública del nodo,
+#      ver terraform/README.md sobre el patrón hostNetwork de un solo
+#      nodo -- si el nodo se reemplaza, ese A record hay que actualizarlo
+#      a mano).
+#   3. Con regla de `host:` ahora que hay dominio real -- ya no sirve
+#      como backend default de la IngressClass "nginx" para cualquier
+#      Host header.
 #
 # Pendiente de validar con datos reales, ya señalado en
 # terraform/modules/firewall/README.md: según cómo exponga el Service el
@@ -44,10 +45,17 @@ kind: Ingress
 metadata:
   name: gateway-ingress
   namespace: digsigna
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
   ingressClassName: nginx
+  tls:
+  - hosts:
+    - api.firmasdigitales.com.mx
+    secretName: gateway-tls
   rules:
-  - http:
+  - host: api.firmasdigitales.com.mx
+    http:
       paths:
       - path: /
         pathType: Prefix
