@@ -22,6 +22,7 @@
 #   # (database_url se deriva solo de MYSQL_CONNECTION_STRING, no hace falta pasarlo aparte)
 #   HSM_PIN=... HSM_MASTER_AES_KEY_V1=... \
 #   KEYCLOAK_ADMIN_PASSWORD=... KEYCLOAK_DB_HOST=... KEYCLOAK_DB_PASSWORD=... \
+#   # KEYCLOAK_DB_PORT=... (default 3306 -- DO managed MySQL usa 25060, no 3306)
 #     ./bootstrap-manual-secrets.sh
 
 set -euo pipefail
@@ -123,7 +124,7 @@ elif [ -n "${KEYCLOAK_ADMIN_PASSWORD:-}" ] && [ -n "${KEYCLOAK_DB_HOST:-}" ] && 
   apply_secret keycloak-secrets \
     --from-literal="admin-username=${KEYCLOAK_ADMIN_USERNAME:-admin}" \
     --from-literal="admin-password=$KEYCLOAK_ADMIN_PASSWORD" \
-    --from-literal="db-url=jdbc:mysql://${KEYCLOAK_DB_HOST}:3306/keycloak?useSSL=true&requireSSL=true" \
+    --from-literal="db-url=jdbc:mysql://${KEYCLOAK_DB_HOST}:${KEYCLOAK_DB_PORT:-3306}/keycloak?useSSL=true&requireSSL=true" \
     --from-literal="db-username=${KEYCLOAK_DB_USERNAME:-keycloak}" \
     --from-literal="db-password=$KEYCLOAK_DB_PASSWORD"
   echo "   IMPORTANTE: KEYCLOAK_ADMIN_PASSWORD tiene que copiarse también a"
