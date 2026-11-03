@@ -1,0 +1,59 @@
+# CD pipeline's Kubernetes credential: a narrowly-scoped ServiceAccount
+# for GitHub Actions to roll out new image versions, never the full
+# cluster-admin kubeconfig. Same pattern as hsm-service-rbac.yaml in
+# this directory, applied once against the real cluster (not per
+# service) since every service's Deployment lives in the same
+# `digsigna` namespace and the CI token is shared org-wide (see
+# platform-infra README / deploy.yml for how it's consumed).
+#
+# Scope: get/list/watch/patch on Deployments only. No access to pods,
+# secrets, configmaps, or any other resource — a compromised CI run
+# can roll a bad image forward, nothing else. `watch` is required for
+# `kubectl rollout status` (reads a Deployment's `.status` via a watch
+# connection); it does not grant watching other resource types.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ci-deployer
+  namespace: digsigna
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ci-deployer
+  namespace: digsigna
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ci-deployer
+  namespace: digsigna
+subjects:
+  - kind: ServiceAccount
+    name: ci-deployer
+    namespace: digsigna
+roleRef:
+  kind: Role
+  name: ci-deployer
+  apiGroup: rbac.authorization.k8s.io
+---
+# Since Kubernetes 1.24, a ServiceAccount no longer auto-generates a
+# long-lived token Secret — `kubectl create token` gives one scoped to
+# an hour by default, meant for interactive use, not for pasting into
+# a GitHub Actions secret that needs to keep working for months. This
+# manual Secret, bound via the annotation below, is the documented way
+# to get a durable token for a case like this one. Apply this manifest
+# once against the real cluster, then read the token back out with:
+#   kubectl get secret ci-deployer-token -n digsigna -o jsonpath='{.data.token}' | base64 -d
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ci-deployer-token
+  namespace: digsigna
+  annotations:
+    kubernetes.io/service-account.name: ci-deployer
+type: kubernetes.io/service-account-token

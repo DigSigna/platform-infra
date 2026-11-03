@@ -1,0 +1,76 @@
+name: Deploy to DOKS
+
+# Reusable workflow — called from each of the 7 service repos'
+# publish job via `uses: DigSigna/platform-infra/.github/workflows/deploy.yml@main`
+# with `secrets: inherit` (the 3 DOKS_* secrets are organization-level,
+# scoped to those repos). One place to fix/improve the rollout logic
+# instead of seven copies drifting apart.
+#
+# `environment: production` has to live here, not in the calling
+# job — GitHub's own docs: "The job that calls the reusable workflow
+# can't use the `environment` keyword." This is how the manual
+# approval gate (required reviewers on the `production` Environment)
+# gets attached. Which repo's `production` Environment this actually
+# evaluates against (this repo, or the caller's) isn't stated
+# unambiguously in GitHub's current docs — checked directly, found no
+# verbatim answer either way. Until the first real run settles it
+# empirically, configure a `production` Environment with required
+# reviewers in BOTH this repo and the calling service repo; whichever
+# one GitHub actually gates against, the approval step still fires.
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: >-
+          Service name — must match both the Deployment name and the
+          container name inside it in k8s/deployments/<service>.yaml,
+          and the GHCR image repo name each service's publish job
+          pushes to (ghcr.io/digsigna/<service>).
+        required: true
+        type: string
+      tag:
+        description: Image tag to roll out, e.g. "1.0.42".
+        required: true
+        type: string
+    secrets:
+      DOKS_API_SERVER:
+        required: true
+      DOKS_CA_CERT:
+        required: true
+      DOKS_CI_TOKEN:
+        required: true
+
+jobs:
+  deploy:
+    name: Roll out ${{ inputs.service }}:${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Configure kubectl with the ci-deployer ServiceAccount
+        env:
+          DOKS_API_SERVER: ${{ secrets.DOKS_API_SERVER }}
+          DOKS_CA_CERT: ${{ secrets.DOKS_CA_CERT }}
+          DOKS_CI_TOKEN: ${{ secrets.DOKS_CI_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "$DOKS_CA_CERT" | base64 -d > "$RUNNER_TEMP/doks-ca.crt"
+          kubectl config set-cluster doks \
+            --server="$DOKS_API_SERVER" \
+            --certificate-authority="$RUNNER_TEMP/doks-ca.crt" \
+            --embed-certs=true
+          kubectl config set-credentials ci-deployer --token="$DOKS_CI_TOKEN"
+          kubectl config set-context doks \
+            --cluster=doks --user=ci-deployer --namespace=digsigna
+          kubectl config use-context doks
+
+      - name: Update image
+        run: |
+          kubectl set image "deployment/${{ inputs.service }}" \
+            "${{ inputs.service }}=ghcr.io/digsigna/${{ inputs.service }}:${{ inputs.tag }}" \
+            -n digsigna
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status "deployment/${{ inputs.service }}" \
+            -n digsigna --timeout=120s
