@@ -2,21 +2,30 @@ name: Deploy to DOKS
 
 # Reusable workflow — called from each of the 7 service repos'
 # publish job via `uses: DigSigna/platform-infra/.github/workflows/deploy.yml@main`
-# with `secrets: inherit` (the 3 DOKS_* secrets are organization-level,
-# scoped to those repos). One place to fix/improve the rollout logic
-# instead of seven copies drifting apart.
+# with `secrets: inherit`. The 3 DOKS_* secrets are set identically as
+# plain repo secrets on each of the 7 service repos, NOT as a single
+# organization secret: GitHub's docs say "Organization-level secrets
+# and variables are not accessible by private repositories for GitHub
+# Free," and all 7 service repos are private — confirmed the hard way
+# (first run failed with "Secret DOKS_API_SERVER is required, but not
+# provided while calling" even though the org secret's access list
+# correctly included the repo). One place to fix/improve the rollout
+# *logic* instead of seven copies drifting apart; the secret *values*
+# still need updating in all 7 places if they ever rotate.
 #
 # `environment: production` has to live here, not in the calling
 # job — GitHub's own docs: "The job that calls the reusable workflow
-# can't use the `environment` keyword." This is how the manual
-# approval gate (required reviewers on the `production` Environment)
-# gets attached. Which repo's `production` Environment this actually
-# evaluates against (this repo, or the caller's) isn't stated
-# unambiguously in GitHub's current docs — checked directly, found no
-# verbatim answer either way. Until the first real run settles it
-# empirically, configure a `production` Environment with required
-# reviewers in BOTH this repo and the calling service repo; whichever
-# one GitHub actually gates against, the approval step still fires.
+# can't use the `environment` keyword." No required-reviewers rule is
+# attached to it: that protection also needs GitHub Team/Enterprise for
+# a private repo's environment (confirmed via the API — 422 "Please
+# ensure the billing plan supports the required reviewers protection
+# rule" on verification-service). This repo is public, so the rule
+# works here, but it was dropped for consistency rather than gating
+# some deploys and not others depending on which repo's environment
+# GitHub actually evaluates. `environment: production` is kept anyway
+# purely for deployment history/visibility in each repo's Deployments
+# tab. The actual gate before a deploy fires is PR review + merge to
+# main.
 
 on:
   workflow_call:
