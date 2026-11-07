@@ -241,3 +241,22 @@ spec:
             memory: "256Mi"
             cpu: "200m"
             ephemeral-storage: "256Mi"
+---
+# Sin esto, "hsm-service" nunca resuelve por DNS dentro del cluster --
+# gateway-service's reverse proxy y el agregador de swagger (SpecURL ->
+# "http://hsm-service:8080/...") fallan con "could not reach backend
+# spec"/502 pese a que el pod está Running 2/2 (las probes de kubelet
+# pegan directo a la IP del pod, sin pasar por el Service, así que no lo
+# detectan).
+apiVersion: v1
+kind: Service
+metadata:
+  name: hsm-service
+  namespace: digsigna
+spec:
+  selector:
+    app: hsm-service
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
