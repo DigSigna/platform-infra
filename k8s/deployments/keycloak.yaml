@@ -117,6 +117,18 @@ spec:
           value: "keycloak"
         - name: KC_HOSTNAME_STRICT
           value: "false"
+        # Sin esto, el provider de hostname (v1, default en 22.0) fuerza
+        # esquema https en toda URL que genera a partir de KC_HOSTNAME --
+        # incluidas las que el propio Admin Console usa para autenticarse
+        # contra el realm "master" (GET /realms/master/.well-known/
+        # openid-configuration, etc.). Este Deployment solo sirve HTTP
+        # (KC_HTTP_ENABLED=true, sin TLS en ningún lado), así que esas
+        # fetches a https://keycloak:8080/... nunca conectan y el Admin
+        # Console se queda girando el spinner para siempre sin loguear
+        # ningún error visible. Confirmado en el log de arranque del pod:
+        # "Hostname settings: ... Strict HTTPS: true ...".
+        - name: KC_HOSTNAME_STRICT_HTTPS
+          value: "false"
         - name: KC_HTTP_ENABLED
           value: "true"
         - name: KC_HEALTH_ENABLED
