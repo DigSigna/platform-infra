@@ -40,6 +40,20 @@
 # abrir el rango de NodePort (30000-32767 por default) en el firewall
 # además de 80/443 -- se confirma cuando se instale el controller, no
 # antes.
+# proxy-body-size: sin esta anotación ingress-nginx usa su default (1m),
+# muy por debajo de lo que signing-service's POST /sign y POST
+# /signing-requests necesitan -- reciben el documento completo en base64
+# dentro del body JSON (signing-service/app/interfaces/schemas/signing.py),
+# nunca un upload multipart. signing-service's propio límite de aplicación
+# es MAX_DOCUMENT_SIZE_MB=10 (bytes decodificados, defense-in-depth --
+# signing-service/app/core/config.py); en base64 eso son ~13.3MB
+# (ceil(n/3)*4), más el resto del payload JSON (document_name, pin, etc,
+# unos pocos KB). 15m deja margen sin acercarse al límite real de la app --
+# si ese límite cambia, actualizar este valor junto con MAX_DOCUMENT_SIZE_MB
+# para que ningún documento válido se rechace acá antes de llegar a la app
+# (y para que uno que SÍ exceda MAX_DOCUMENT_SIZE_MB no se rechace acá
+# tampoco -- debe ser el 413 de DocumentTooLargeError, con su propio
+# detalle, el que lo explique, no un 413 opaco de nginx).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -47,6 +61,7 @@ metadata:
   namespace: digsigna
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "15m"
 spec:
   ingressClassName: nginx
   tls:
