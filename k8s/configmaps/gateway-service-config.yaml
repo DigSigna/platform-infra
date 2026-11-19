@@ -53,6 +53,7 @@ data:
         - "/identification/api/v1/auth/refresh"
         - "/identification/api/v1/auth/logout"
         - "/identification/api/v1/bootstrap"
+        - "/identification/.well-known/jwks.json"
         - "/certificate/public/ca-bundle"
         - "/certificate/public/certificates/status"
 
