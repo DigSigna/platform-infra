@@ -1,0 +1,28 @@
+# Reemplaza las `rules:` que antes vivían dentro de
+# k8s/ingress/gateway-ingress.yaml -- mismo host, mismo (único) backend.
+# Sigue siendo el único de los 6 Service de aplicación referenciado por
+# cualquier recurso de borde -- los otros 5 siguen siendo ClusterIP
+# internos, nunca backend de un HTTPRoute (misma regla de diseño que ya
+# documenta terraform/modules/firewall/README.md).
+#
+# Dos parentRefs (sectionName http Y https) a propósito -- sin esto, la
+# ruta solo se adjunta al primer listener que declare `gateway.yaml` y el
+# tráfico por el otro protocolo no tendría ningún HTTPRoute, 404 con
+# "no matching route".
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: gateway-service
+  namespace: digsigna
+spec:
+  parentRefs:
+  - name: gateway
+    sectionName: http
+  - name: gateway
+    sectionName: https
+  hostnames:
+  - "api.firmasdigitales.com.mx"
+  rules:
+  - backendRefs:
+    - name: gateway-service
+      port: 8080

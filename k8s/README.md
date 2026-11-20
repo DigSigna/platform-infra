@@ -18,8 +18,9 @@ tocar cualquier valor real.
 (identification-service, certificate-service, signing-service,
 verification-service, gateway-service, audit-service) ya tienen
 `Deployment`+`Service` propios (ver `deployments/` abajo), y hay un
-`Ingress` apuntando al único de los 6 que corresponde exponer
-(gateway-service) -- ver `ingress/` abajo y
+`Gateway`/`HTTPRoute` (Gateway API, no `Ingress` -- migrado el
+2026-11-20, ver `docs/ingress-migration-plan.md`) apuntando al único de
+los 6 que corresponde exponer (gateway-service) -- ver `gateway/` abajo y
 `terraform/modules/firewall/README.md` para la regla de diseño que esto
 implementa (solo 80/443 públicos, siempre hacia gateway-service, nunca a
 los otros 5 backends directo).
@@ -47,9 +48,12 @@ k8s/
     audit-service.yaml             # NUEVO -- AUDIT_CONFIG_PATH + ConfigMap propio (gap nuevo encontrado, ver el archivo)
     signing-service.yaml           # NUEVO -- AUTH_ISSUER/AUTH_AUDIENCE + REDIS_* (gaps nuevos, ver el archivo)
     verification-service.yaml      # NUEVO -- mismos dos gaps que signing-service
-    gateway-service.yaml           # NUEVO -- último en el orden, único backend de ingress/gateway-ingress.yaml
-  ingress/
-    gateway-ingress.yaml           # NUEVO -- único Ingress de este repo, solo gateway-service de backend (ver el archivo para las 3 decisiones que resuelve)
+    gateway-service.yaml           # NUEVO -- último en el orden, único backend de gateway/httproute.yaml
+  gateway/                     # Gateway API -- reemplaza a ingress/ (borrado, migración 2026-11-20)
+    gateway.yaml                   # Gateway (listeners http+https), gatewayClassName: nginx (NGF, no la GatewayClass "cilium" ya activa por default -- ver el comentario de cabecera para el porqué)
+    httproute.yaml                 # reemplaza las `rules:` del Ingress anterior, mismo único backend gateway-service
+    clientsettingspolicy.yaml      # reemplaza la anotación proxy-body-size: 15m del Ingress anterior
+    letsencrypt-clusterissuer.yaml # mismo ClusterIssuer de antes, solver cambiado a gatewayHTTPRoute
   shared-secrets/             # Secrets compartidos entre varios servicios
     mysql-secrets.secret.yaml   # DSN de la MySQL gestionada (migrado de softhsm/k8s/)
     hsm-secrets.secret.yaml     # PIN/SO-PIN/master keys de SoftHSM (migrado de softhsm/k8s/)
@@ -238,13 +242,55 @@ paso no importa.
     entre certificate-service/audit-service y entre signing-service/
     verification-service no importa al arrancar (ninguno depende del
     otro) -- es solo una sugerencia de secuencia, no una dependencia dura.
-    gateway-service al final porque es el único que el Ingress expone, y
+    gateway-service al final porque es el único que el Gateway expone, y
     sus propios `/health`/`/ready` no dependen de los otros 5 para
     responder (solo sus endpoints de health agregado, que no son los que
     usan las probes de este Deployment).
-11. Instalar ingress-nginx (Helm, fuera de este repo -- ver el comentario
-    de cabecera de `k8s/ingress/gateway-ingress.yaml`) y luego
-    `kubectl apply -f k8s/ingress/gateway-ingress.yaml`.
+11. **Instalar NGINX Gateway Fabric (NGF)** -- reemplazó a ingress-nginx
+    el 2026-11-20 (ver `docs/ingress-migration-plan.md` para el porqué
+    completo: ingress-nginx está retirado, última release v1.15.1 marzo
+    2026, sin más parches nunca, y CVE-2026-116472 no tenía fix upstream
+    posible). NGF (Helm o manifiestos, fuera de este repo, mismo criterio
+    que ya aplicaba a ingress-nginx) vía su instalación por manifiestos
+    (sin dependencia de `helm` CLI):
+    ```sh
+    # 1. CRDs estándar de Gateway API -- SOLO las que Cilium (CNI de DOKS,
+    #    Gateway API ya viene activado por default) todavía no tenía
+    #    (BackendTLSPolicy, ListenerSet, TCPRoute, UDPRoute). Las que
+    #    Cilium YA posee (GatewayClass/Gateway/HTTPRoute/GRPCRoute/
+    #    ReferenceGrant, v1.2.1) NO se tocan -- son un ConfigMap/CRD
+    #    gestionado por el addon de DOKS, y un `kubectl apply` directo
+    #    sobre ellas da conflicto de server-side-apply (confirmado en
+    #    producción); forzarlo con --force-conflicts arriesga que la
+    #    próxima reconciliación del addon lo revierta solo, mismo patrón
+    #    de riesgo que ya se documentó para la mitigación de
+    #    CVE-2026-116472 pero sobre el CNI completo. NGF corre bien sobre
+    #    v1.2.1 para los recursos core (Gateway/HTTPRoute) que usa este
+    #    repo -- confirmado en producción.
+    kubectl kustomize "https://github.com/nginx/nginx-gateway-fabric/config/crd/gateway-api/standard?ref=v2.9.0" | kubectl apply --server-side -f -
+
+    # 2. CRDs propias de NGF (gateway.nginx.org -- NginxProxy, ClientSettingsPolicy, etc.)
+    kubectl apply --server-side -f https://raw.githubusercontent.com/nginx/nginx-gateway-fabric/v2.9.0/deploy/crds.yaml
+
+    # 3. Control plane + NginxProxy/NginxGateway/GatewayClass. El manifiesto
+    #    default (deploy/default/deploy.yaml) crea el dataplane como
+    #    Deployment+Service type LoadBalancer -- EDITARLO antes de aplicar
+    #    (sección NginxProxy al final del archivo) a daemonSet+hostPorts,
+    #    igual patrón sin-LoadBalancer de un solo nodo que ya usaba
+    #    ingress-nginx (ver el comentario de cabecera de
+    #    k8s/gateway/gateway.yaml para el porqué -- se evaluó y descartó
+    #    la GatewayClass "cilium" ya activa por default precisamente por
+    #    esto):
+    #      spec.kubernetes.daemonSet.container.hostPorts:
+    #        - {port: 80, containerPort: 80}
+    #        - {port: 443, containerPort: 443}
+    #      spec.kubernetes.service.type: ClusterIP
+    kubectl apply -f https://raw.githubusercontent.com/nginx/nginx-gateway-fabric/v2.9.0/deploy/default/deploy.yaml  # editado como arriba
+    ```
+12. `kubectl apply -f k8s/gateway/` (los 4 archivos: `gateway.yaml`,
+    `httproute.yaml`, `clientsettingspolicy.yaml`,
+    `letsencrypt-clusterissuer.yaml`) -- requiere que el paso 11 ya haya
+    creado la GatewayClass `nginx`.
 
 ## Gaps conocidos, señalados a propósito
 
@@ -381,7 +427,9 @@ Ingress** (lo que quedaba explícitamente fuera de alcance desde la
 primera ronda):
 
 - `k8s/deployments/{identification,certificate,signing,verification,audit,gateway}-service.yaml`
-  + `k8s/ingress/gateway-ingress.yaml` -- ver el árbol arriba y el
+  + el `Ingress` original (`k8s/ingress/gateway-ingress.yaml`, borrado --
+  migrado a `k8s/gateway/`, ver "Migración de ingress-nginx a Gateway
+  API" más abajo) -- ver el árbol arriba y el
   comentario de cabecera de cada archivo para el detalle completo. Orden
   sugerido documentado en "Orden para aplicar todo desde cero" arriba,
   basado en las dependencias de arranque reales (confirmadas leyendo
@@ -426,8 +474,10 @@ primera ronda):
   instalado por este repo (Helm release, fuera de alcance, mismo criterio
   que `terraform/modules/firewall/README.md` ya adelantaba). Sin
   `tls:`/dominio todavía -- mismo estado "placeholder" que
-  `cors.allowed_origins` en `gateway-service-config.yaml`. Ver el
-  comentario de cabecera de `k8s/ingress/gateway-ingress.yaml`.
+  `cors.allowed_origins` en `gateway-service-config.yaml`.
+  **Superado el 2026-11-20**: ingress-nginx se migró a NGINX Gateway
+  Fabric (Gateway API) -- ver "Migración de ingress-nginx a Gateway API"
+  más abajo, `docs/ingress-migration-plan.md` y `k8s/gateway/`.
 
 **Sin resolver, señalados a propósito:**
 
@@ -436,14 +486,13 @@ primera ronda):
   una réplica, esto es un cuello de botella real (no resuelto; depende de
   si `do-block-storage` en DOKS soporta `ReadWriteMany`, que normalmente
   no soporta para volúmenes de bloque).
-- **NodePort range para el Load Balancer de DigitalOcean**: según cómo
-  exponga el Service el Helm release de ingress-nginx todavía sin
-  instalar (`type: LoadBalancer` con `externalTrafficPolicy`, NodePort, o
-  `hostNetwork`), puede hacer falta abrir el rango de NodePort
-  (30000-32767 por default) en `terraform/modules/firewall` además de
-  80/443 -- se confirma recién cuando se instale el controller, ya
-  señalado en `terraform/modules/firewall/README.md` y repetido en
-  `k8s/ingress/gateway-ingress.yaml`.
+- **NodePort range para el Load Balancer de DigitalOcean**: **Resuelto,
+  no hacía falta.** NGINX Gateway Fabric quedó configurado con
+  `daemonSet`+`hostPorts` (ver "Migración de ingress-nginx a Gateway
+  API" abajo), el mismo patrón sin `Service type: LoadBalancer`/NodePort
+  que ya usaba ingress-nginx -- `terraform/modules/firewall` sigue
+  bastando con 80/443, confirmado contra el cluster real, sin ningún
+  cambio de Terraform en esta migración.
 - **Campos vestigiales en `hsm-secrets`** (`master-key`, `v1`, y ahora
   también `so-pin`): se preservan en la migración por no poder descartar
   con 100% de certeza que nada los lea fuera de este repo — candidatos a
@@ -463,3 +512,59 @@ primera ronda):
   antes de aplicar cada Deployment -- nunca dejar `latest` (mismo criterio
   ya documentado para `migrations-job.yaml`/`hsm-service.yaml`: un
   incidente real con un tag no re-pulleado).
+
+## Migración de ingress-nginx a Gateway API (2026-11-20)
+
+Ejecutada en producción el mismo día que se decidió -- el proyecto
+todavía no tenía tráfico real, así que no hizo falta ninguna ventana de
+mantenimiento cuidadosa (ver `docs/ingress-migration-plan.md` para el
+porqué completo y el plan original). Reemplazó por completo a
+`k8s/ingress/` (directorio borrado) por `k8s/gateway/` (ver árbol
+arriba). Resumen de lo que de verdad pasó, distinto en algunos puntos del
+plan original:
+
+- **Se descubrió que Cilium (CNI de DOKS) ya trae Gateway API activado
+  por default**, con una GatewayClass `cilium` propia -- evaluada y
+  descartada a propósito: su configuración por default crea un `Service
+  type: LoadBalancer` (costo recurrente de DigitalOcean que no se quería
+  asumir), y la única forma de evitarlo es editar `cilium-config` (un
+  ConfigMap gestionado por el addon de DOKS) -- mismo riesgo de reversión
+  silenciosa en la próxima reconciliación del addon que ya se documentó
+  arriba para la mitigación de CVE-2026-116472, pero sobre el CNI
+  completo. Se usó NGINX Gateway Fabric (NGF) en su lugar, con su propia
+  GatewayClass `nginx`.
+- **Las CRDs estándar de Gateway API (`GatewayClass`/`Gateway`/
+  `HTTPRoute`/`GRPCRoute`/`ReferenceGrant`) NO se actualizaron** -- siguen
+  en v1.2.1 (la versión que trae Cilium), no en v1.7.0 (la versión contra
+  la que NGF 2.9.0 está probado oficialmente). Un intento de
+  `kubectl apply --server-side` dio conflicto porque Cilium ya es el
+  field manager de esas CRDs -- no se forzó con `--force-conflicts` por
+  el mismo riesgo de reversión. Confirmado en producción que NGF
+  funciona bien sobre v1.2.1 para los recursos que usa este repo
+  (`Gateway`, `HTTPRoute`, campos core estables desde v1.0) -- riesgo
+  aceptado, no una garantía del proyecto NGF. Sí se instalaron (sin
+  conflicto, Cilium no las tenía) las 4 CRDs nuevas de la v1.7.0 que
+  faltaban: `BackendTLSPolicy`, `ListenerSet`, `TCPRoute`, `UDPRoute`.
+- **El dataplane de NGF se configuró como `daemonSet`+`hostPorts`
+  (80/443), con `service.type: ClusterIP`** -- no el default del
+  manifiesto oficial (`Deployment`+`Service type: LoadBalancer`). Mismo
+  patrón sin-LoadBalancer de un solo nodo que ya usaba ingress-nginx, sin
+  tocar `terraform/modules/firewall` (sigue bastando con 80/443).
+- **El certificado TLS no se reemitió**: el `Secret`/`Certificate`
+  `gateway-tls` ya emitido por cert-manager seguía vigente (vence
+  2027-02-01) y es independiente del `Ingress` que lo pedía -- borrar el
+  `Ingress` no lo afecta. Solo se actualizó el solver del `ClusterIssuer`
+  (`k8s/gateway/letsencrypt-clusterissuer.yaml`) para que la PRÓXIMA
+  renovación automática use el challenge vía `HTTPRoute` en vez de
+  `Ingress` -- no se disparó ningún challenge ACID nuevo en esta
+  migración.
+- **Validado en producción antes y después del corte**: `GET /health`
+  (200, respuesta real de gateway-service), ruta sin auth (401, igual
+  que antes), POST de 10MB (pasa el chequeo de tamaño, llega al backend)
+  y POST de 16MB (413, rechazado por NGF antes de llegar a
+  gateway-service) -- mismo comportamiento que el `Ingress` anterior con
+  `proxy-body-size: 15m`.
+- ingress-nginx se desinstaló por completo (DaemonSet, Services, 2
+  ConfigMaps, ClusterRole/ClusterRoleBinding,
+  ValidatingWebhookConfiguration, ServiceAccount, IngressClass) -- nada
+  de ese release quedó en el cluster.

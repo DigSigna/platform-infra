@@ -1,0 +1,56 @@
+# Reemplaza a k8s/ingress/gateway-ingress.yaml (ya borrado) -- ver
+# docs/ingress-migration-plan.md para el porqué completo: ingress-nginx
+# está retirado (sin más parches nunca, última release v1.15.1) y CVE-2026-116472
+# no tenía fix upstream posible. Ejecutado en producción el 2026-11-20.
+#
+# gatewayClassName: nginx -- la GatewayClass de NGINX Gateway Fabric (NGF),
+# instalado aparte (Helm/manifiestos, mismo criterio que ya aplicaba a
+# ingress-nginx: fuera de alcance de este repo, ver k8s/README.md para los
+# comandos exactos). NO usa la GatewayClass "cilium" que ya viene activada
+# por default en DOKS (Cilium como CNI, Gateway API habilitado de fábrica)
+# -- se evaluó y se descartó a propósito: el NginxProxy por default de
+# Cilium crea un Service type LoadBalancer (Load Balancer real de
+# DigitalOcean, costo recurrente que no se quería asumir), y no hay forma
+# de cambiar ese comportamiento sin editar `cilium-config` a mano, un
+# ConfigMap gestionado por el addon de DOKS -- mismo riesgo de reversión
+# silenciosa en la próxima reconciliación del addon que ya se documentó
+# para la mitigación de CVE-2026-116472 en k8s/README.md, pero esta vez
+# sobre el CNI completo, no solo una anotación. NGF sí permite el patrón
+# sin LoadBalancer vía su CRD NginxProxy (`kubernetes.daemonSet` +
+# `container.hostPorts`, configurado al instalar NGF -- ver k8s/README.md)
+# -- mismo patrón hostNetwork-equivalente de un solo nodo que ya usaba
+# ingress-nginx, sin tocar terraform/modules/firewall (sigue bastando con
+# 80/443 públicos, confirmado en producción).
+#
+# Dos listeners porque Gateway API no mezcla HTTP/HTTPS en un solo
+# listener (a diferencia de un Ingress clásico, donde el bloque `tls:` es
+# aparte de las `rules:`) -- el mismo host, los mismos backends vía
+# HTTPRoute (ver httproute.yaml).
+#
+# tls.certificateRefs reusa el MISMO Secret `gateway-tls` que ya
+# gestionaba cert-manager para el Ingress anterior -- no se forzó un
+# reemisión de certificado en la migración (el cert ya emitido seguía
+# vigente, vence 2027-02-01). Lo único que cambia para la PRÓXIMA
+# renovación automática es el solver del ClusterIssuer -- ver
+# letsencrypt-clusterissuer.yaml en este mismo directorio.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: gateway
+  namespace: digsigna
+spec:
+  gatewayClassName: nginx
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+    hostname: api.firmasdigitales.com.mx
+  - name: https
+    port: 443
+    protocol: HTTPS
+    hostname: api.firmasdigitales.com.mx
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - kind: Secret
+        name: gateway-tls

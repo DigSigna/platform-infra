@@ -1,0 +1,32 @@
+# Reemplaza la anotación `nginx.ingress.kubernetes.io/proxy-body-size: "15m"`
+# que antes vivía en k8s/ingress/gateway-ingress.yaml -- Gateway API no
+# tiene anotaciones, el límite de tamaño de body es un CRD propio de NGINX
+# Gateway Fabric (ClientSettingsPolicy, `spec.body.maxSize`), adjuntado al
+# HTTPRoute via targetRef.
+#
+# Mismo razonamiento que ya documentaba el Ingress anterior, sin cambios:
+# signing-service's POST /sign y POST /signing-requests reciben el
+# documento completo en base64 dentro del body JSON (nunca upload
+# multipart, ver signing-service/app/interfaces/schemas/signing.py).
+# MAX_DOCUMENT_SIZE_MB=10 (bytes decodificados, defense-in-depth --
+# signing-service/app/core/config.py) son ~13.3MB en base64
+# (ceil(n/3)*4) + el resto del payload JSON -- 15m deja margen sin
+# acercarse al límite real de la app. Si ese límite cambia, actualizar
+# este valor junto con MAX_DOCUMENT_SIZE_MB.
+#
+# Validado en vivo contra producción el 2026-11-20: un POST de 16MB fue
+# rechazado con 413 por NGF (nunca llegó a gateway-service), uno de 10MB
+# pasó el chequeo de tamaño (llegó al backend, que respondió según su
+# propia lógica de auth/negocio, no 413).
+apiVersion: gateway.nginx.org/v1alpha1
+kind: ClientSettingsPolicy
+metadata:
+  name: gateway-service-body-size
+  namespace: digsigna
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: gateway-service
+  body:
+    maxSize: "15m"

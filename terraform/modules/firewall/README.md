@@ -22,3 +22,13 @@ Kubernetes hacia adentro del cluster, no el firewall de los droplets.
   pueda reenviar tráfico de 80/443 al pod del Ingress. Esto se decide
   cuando se instale el Ingress, no antes — por ahora el firewall solo
   abre 80/443 tal como se pidió.
+
+  **Resuelto (2026-11-20), no hizo falta:** primero ingress-nginx y luego
+  NGINX Gateway Fabric (migración de Ingress a Gateway API, ver
+  `k8s/README.md` y `docs/ingress-migration-plan.md`) se expusieron con
+  el patrón `hostNetwork`/`hostPorts` sobre el único nodo del node pool,
+  nunca `Service type: LoadBalancer`/`NodePort` -- confirmado en
+  producción, 80/443 sigue siendo todo lo que este módulo necesita abrir.
+  Sigue siendo cierto que si algún día se decide exponer el controller
+  vía un Load Balancer real de DigitalOcean (por ejemplo al crecer a más
+  de un nodo), este rango habría que abrirlo entonces.
